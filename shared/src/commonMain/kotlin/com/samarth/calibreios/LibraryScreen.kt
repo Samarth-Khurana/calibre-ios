@@ -1,6 +1,8 @@
 package com.samarth.calibreios
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -10,12 +12,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
@@ -25,6 +29,8 @@ import com.samarth.calibreios.calibre.CalibreBook
 import com.samarth.calibreios.calibre.CalibreClient
 import com.samarth.calibreios.calibre.CalibreServer
 import com.samarth.calibreios.calibre.Library
+import com.samarth.calibreios.calibre.rawProbe
+import com.samarth.calibreios.discovery.ServerDiscovery
 import kotlinx.coroutines.launch
 
 /** Integer MB hid a 55 KB book as "0 MB". */
@@ -58,16 +64,44 @@ fun LibraryScreen(
 
     var busy by remember { mutableStateOf(false) }
     var note by remember { mutableStateOf("") }
+    // Bumped on every explicit connect attempt. Without it, selecting a server
+    // equal to the current one is a no-op -- the client is not recreated, no
+    // request is sent, and the previous error just stays on screen looking like
+    // a fresh failure. There has to be a way to retry.
+    var attempt by remember { mutableIntStateOf(0) }
+    var probe by remember { mutableStateOf("") }
 
-    val client = remember(server) { server?.let { CalibreClient(it) } }
+    // Keyed on `attempt`, not just `server`. NSURLSession evaluates the network
+    // path when it is created and caches the verdict; a session built before the
+    // Local Network permission was granted stays "unsatisfied" for its whole
+    // life, so retrying with the same session can never succeed. A new client
+    // per attempt is the only way a retry means anything.
+    val client = remember(server, attempt) { server?.let { CalibreClient(it) } }
+    DisposableEffect(client) { onDispose { client?.close() } }
+
+    // Started before anything else, and deliberately so. Beyond finding the
+    // server, a Bonjour browse is what raises the Local Network permission
+    // prompt -- an HTTP request to a LAN address is blocked *silently*, leaving
+    // the app absent from Settings with nothing for the user to switch on.
+    val discovery = remember { ServerDiscovery() }
+    val discovered by discovery.found.collectAsState()
+    DisposableEffect(discovery) {
+        discovery.start()
+        onDispose { discovery.stop() }
+    }
 
     // Cached catalogue first, so the list is populated before -- and without --
     // the network. Reaching the server is enrichment, never a precondition.
     LaunchedEffect(Unit) { library.loadCached() }
 
-    LaunchedEffect(client) {
+    LaunchedEffect(client, attempt) {
         val c = client ?: return@LaunchedEffect
+        val s = server
         busy = true
+        library.clearServerState()
+        // Control experiment: the same URL through the platform's own stack.
+        // If this succeeds while Ktor fails, the problem is ours, not iOS's.
+        if (s != null) rawProbe("${s.baseUrl}/ajax/search?num=1") { probe = it }
         library.refresh(c)
         busy = false
     }
@@ -115,8 +149,30 @@ fun LibraryScreen(
                     val next = CalibreServer(host.trim(), port.toIntOrNull() ?: 8080)
                     library.saveServer(next)
                     server = next
+                    attempt++
                 },
             ) { Text("Connect") }
+        }
+
+        if (discovered.isNotEmpty()) {
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                discovered.forEach { found ->
+                    AssistChip(
+                        onClick = {
+                            host = found.host
+                            port = found.port.toString()
+                            val next = CalibreServer(found.host, found.port)
+                            library.saveServer(next)
+                            server = next
+                            attempt++
+                        },
+                        label = { Text("${found.name} · ${found.host}", fontSize = 11.sp) },
+                    )
+                }
+            }
         }
 
         val stateLine = when (val s = serverState) {
@@ -126,6 +182,7 @@ fun LibraryScreen(
         }
         Text(stateLine, fontSize = 11.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
         if (note.isNotEmpty()) Text(note, fontSize = 11.sp, maxLines = 2)
+        if (probe.isNotEmpty()) Text(probe, fontSize = 10.sp, maxLines = 4)
 
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
 

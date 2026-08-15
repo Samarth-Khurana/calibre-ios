@@ -21,7 +21,15 @@ data class CalibreServer(
     @Serializable
     data class Credentials(val username: String, val password: String)
 
-    val baseUrl: String get() = "http://$host:$port"
+    /**
+     * Bracketed when the host is an IPv6 literal — an unbracketed colon in the
+     * host position is read as the port separator and the URL fails to parse.
+     */
+    val baseUrl: String
+        get() {
+            val h = if (host.contains(':') && !host.startsWith("[")) "[$host]" else host
+            return "http://$h:$port"
+        }
 }
 
 /** One book, as far as V1 cares. */

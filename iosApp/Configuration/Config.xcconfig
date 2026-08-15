@@ -1,4 +1,4 @@
-TEAM_ID=
+TEAM_ID=92US8PNAR8
 
 PRODUCT_NAME=calibre-ios
 PRODUCT_BUNDLE_IDENTIFIER=com.samarth.calibreios.calibre-ios$(TEAM_ID)

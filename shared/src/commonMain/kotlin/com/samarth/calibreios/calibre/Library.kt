@@ -46,6 +46,11 @@ class Library(
         storage.writeText(SERVER_FILE, json.encodeToString(server))
     }
 
+    /** Drop a previous verdict so a retry does not display the old failure. */
+    fun clearServerState() {
+        _server.value = ServerState.Unknown
+    }
+
     // ------------------------------------------------------------ catalogue
 
     /** Load the cached catalogue. Instant, works offline, may be stale. */
@@ -148,21 +153,48 @@ class Library(
 /**
  * A human-readable reason, biased toward the honest one.
  *
- * iOS reports a denied Local Network permission as an ordinary connection
- * failure — spec risk #1, and the single most likely cause of sync mysteriously
- * not working. We cannot distinguish it from a sleeping Mac programmatically,
- * so the message names both rather than guessing.
+ * Spec risk #1 said a denied Local Network permission is indistinguishable from
+ * a sleeping Mac. **That turned out to be false, and the difference matters.**
+ * iOS reports the denial as `NSURLErrorNotConnectedToInternet` (-1009,
+ * "The Internet connection appears to be offline") even with Wi-Fi up — but the
+ * underlying error carries `_NSURLErrorNWPathKey = unsatisfied (Local network
+ * prohibited)`, which nothing else produces. Observed on an iPhone 17 Pro,
+ * iOS 26, with the server reachable from Safari on the same device.
+ *
+ * So the two cases get two different messages: one is fixed in Settings, the
+ * other by waking the Mac, and telling a user to check the wrong one wastes
+ * their time.
  */
 internal fun Throwable.describe(): String {
-    val raw = message ?: this::class.simpleName ?: "unknown error"
-    val looksLikeNoRoute = listOf(
+    val raw = buildString {
+        append(this@describe::class.simpleName ?: "Error")
+        message?.let { append(": ").append(it) }
+        cause?.let { append(" ← ").append(it::class.simpleName).append(": ").append(it.message) }
+    }
+    // Always print the untouched error. The friendly text below is a guess at
+    // the cause; this is the fact, and hiding it made a real failure
+    // undiagnosable from the device.
+    println("[calibre] request failed: $raw")
+
+    // Checked first: it also matches the "offline" patterns below, and the
+    // specific diagnosis must win over the generic one.
+    val localNetworkBlocked = raw.contains("Local network prohibited", ignoreCase = true)
+    if (localNetworkBlocked) {
+        return "iOS is blocking this app from reaching your local network.\n\n" +
+            "Settings › Privacy & Security › Local Network, and turn on " +
+            "\"calibre-ios\". If it isn't listed, delete the app and reinstall " +
+            "it — the permission prompt only appears once per install, and a " +
+            "missed prompt cannot be re-triggered."
+    }
+
+    val looksUnreachable = listOf(
         "Connection refused", "Network is unreachable", "timeout", "timed out",
         "Could not connect", "-1009", "-1004",
     ).any { raw.contains(it, ignoreCase = true) }
 
-    return if (looksLikeNoRoute) {
-        "Can't reach the server — it may be asleep, or Local Network access " +
-            "may be off for this app in Settings › Privacy."
+    return if (looksUnreachable) {
+        "Can't reach the server — the Mac may be asleep, or on a different " +
+            "network.\n\n$raw"
     } else {
         raw
     }
