@@ -139,6 +139,7 @@ class TtsSession(
         job?.cancel()
         job = null
         speaker.stop()
+        reader.send(ReaderCommand.TtsClearHighlight)
         _state.value = State.Idle
         _current.value = null
     }
@@ -171,6 +172,7 @@ class TtsSession(
                     emptySections = 0
                 } else {
                     if (++emptySections > MAX_EMPTY_SECTIONS || !advanceSection()) {
+                        reader.send(ReaderCommand.TtsClearHighlight)
                         _state.value = State.Finished
                         _current.value = null
                         _trace.emit("end of book")

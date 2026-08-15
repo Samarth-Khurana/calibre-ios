@@ -9,6 +9,7 @@
 
 import './foliate/view.js'
 import * as CFI from './foliate/epubcfi.js'
+import { Overlayer } from './foliate/overlayer.js'
 
 const view = document.getElementById('view')
 
@@ -58,6 +59,39 @@ view.addEventListener('load', ({ detail }) => {
 // (segment = sentence when granularity is 'sentence'). We flatten that into
 // plain-text chunks, because AVSpeechSynthesizer takes strings, not SSML.
 let ttsReady = false
+
+// Key under which the read-aloud highlight is registered with the overlayer.
+// Reusing one key means painting the next chunk implicitly replaces the last.
+const TTS_MARK = 'tts-current'
+
+let highlightColor = 'rgba(255, 214, 0, .45)'
+
+// foliate's DEFAULT tts highlight callback is `scrollToAnchor(range, true)`,
+// which only SCROLLS -- the flag merely tags the relocation reason. Nothing is
+// ever painted. Drawing the chunk is the entire point of the feature, so we
+// pass our own callback into initTTS and drive the Overlayer directly.
+//
+// Via the overlayer rather than view.addAnnotation because we already hold a
+// live Range; addAnnotation takes a CFI and would resolve it back into the
+// range we started from.
+const paintHighlight = range => {
+    try {
+        const contents = view.renderer?.getContents?.() ?? []
+        for (const c of contents) c.overlayer?.remove(TTS_MARK)
+        const target = contents.find(c => c.overlayer)
+        if (target) {
+            target.overlayer.add(TTS_MARK, range, Overlayer.highlight, { color: highlightColor })
+        }
+        // Still scroll, so a chunk below the fold pages into view.
+        view.renderer.scrollToAnchor(range, true)
+    } catch (e) { fail('highlight', e) }
+}
+
+const clearHighlight = () => {
+    try {
+        for (const c of view.renderer?.getContents?.() ?? []) c.overlayer?.remove(TTS_MARK)
+    } catch (e) { /* nothing was painted */ }
+}
 
 const ssmlToChunks = ssml => {
     const doc = new DOMParser().parseFromString(String(ssml), 'application/xml')
@@ -140,6 +174,7 @@ window.__reader = {
         try {
             const t = typeof theme === 'string' ? JSON.parse(theme) : theme
             document.body.style.setProperty('--reader-bg', t.bg)
+            if (t.highlight) highlightColor = t.highlight
             view.renderer.setStyles(`
                 @namespace epub "http://www.idpf.org/2007/ops";
                 html {
@@ -177,7 +212,7 @@ window.__reader = {
             // changing the delimiter mid-page would otherwise be silently
             // ignored. Dropping the instance forces re-segmentation.
             view.tts = null
-            await view.initTTS(granularity)
+            await view.initTTS(granularity, paintHighlight)
             ttsReady = true
             post({
                 type: 'ttsReady',
@@ -213,6 +248,9 @@ window.__reader = {
     ttsHighlight(mark) {
         try { view.tts.setMark(mark) } catch (e) { fail('ttsHighlight', e) }
     },
+
+    // Called when reading stops, so the last spoken chunk does not stay lit.
+    ttsClearHighlight() { clearHighlight() },
 
     // Starts TTS from the currently visible position rather than block 0.
     ttsFromCurrent() {

@@ -119,6 +119,11 @@ sealed interface ReaderCommand {
     data object TtsFromCurrent : ReaderCommand {
         override fun toJs() = "window.__reader.ttsFromCurrent()"
     }
+
+    /** Remove the read-aloud highlight, so a stopped chunk does not stay lit. */
+    data object TtsClearHighlight : ReaderCommand {
+        override fun toJs() = "window.__reader.ttsClearHighlight()"
+    }
 }
 
 // ---------------------------------------------------------------- events
@@ -272,6 +277,12 @@ data class ReaderTheme(
      * dark background -- a table of contents is entirely links.
      */
     val link: String = "#0645ad",
+    /**
+     * Fill painted behind the chunk being read aloud. Must stay legible over
+     * [bg] while leaving [fg] readable through it, so it is per-theme rather
+     * than one fixed colour.
+     */
+    val highlight: String = "rgba(255, 214, 0, .45)",
     val dark: Boolean = false,
     val marginPx: Int? = null,
 ) {
@@ -285,6 +296,7 @@ data class ReaderTheme(
         append("\"fg\":").append(fg.jsonString()).append(',')
         append("\"bg\":").append(bg.jsonString()).append(',')
         append("\"link\":").append(link.jsonString()).append(',')
+        append("\"highlight\":").append(highlight.jsonString()).append(',')
         append("\"dark\":").append(dark)
         marginPx?.let { append(",\"marginPx\":").append(it) }
         append('}')
@@ -292,9 +304,17 @@ data class ReaderTheme(
 
     companion object {
         val Light = ReaderTheme()
-        val Sepia = ReaderTheme(fg = "#3b2f1e", bg = "#f6ecd9", link = "#7a4b2a")
-        val Dark =
-            ReaderTheme(fg = "#d8d8d8", bg = "#121212", link = "#8ab4f8", dark = true)
+        val Sepia = ReaderTheme(
+            fg = "#3b2f1e", bg = "#f6ecd9", link = "#7a4b2a",
+            highlight = "rgba(196, 128, 26, .40)",
+        )
+        val Dark = ReaderTheme(
+            fg = "#d8d8d8", bg = "#121212", link = "#8ab4f8",
+            // Light-on-dark needs a cool, dimmer wash; the light theme's yellow
+            // glares and swamps the text.
+            highlight = "rgba(94, 129, 172, .55)",
+            dark = true,
+        )
     }
 }
 
