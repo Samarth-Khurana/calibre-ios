@@ -11,3 +11,7 @@ internal actual fun autoplayEnabled(): Boolean =
 @OptIn(ExperimentalForeignApi::class)
 internal actual fun autoplayDelimiter(): String? =
     getenv("CALIBRE_DELIMITER")?.toKString()?.takeIf { it.isNotEmpty() }
+
+@OptIn(ExperimentalForeignApi::class)
+internal actual fun testBookPath(): String? =
+    getenv("CALIBRE_BOOK")?.toKString()?.takeIf { it.isNotEmpty() }

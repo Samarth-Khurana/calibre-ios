@@ -130,14 +130,37 @@ window.__reader = {
     // view.init() is what actually renders, and it takes the start position. So
     // resuming at a calibre position is one call, not open-then-seek (which
     // would render page 1 first and visibly jump).
-    async open(url, initialLocation, isCalibre) {
+    // `useCalibreBookmark` reads the desktop viewer's position out of
+    // META-INF/calibre_bookmarks.txt inside the EPUB itself. foliate already
+    // implements the read (`book.getCalibreBookmarks()`, base64+JSON) and
+    // nothing was calling it -- so the whole Mac -> iPhone position path costs
+    // no extra request and no ZIP handling on the Kotlin side.
+    async open(url, initialLocation, isCalibre, useCalibreBookmark) {
         try {
             await view.open(url)
-            const last = initialLocation
-                ? (isCalibre ? CFI.fromCalibrePos(initialLocation) : initialLocation)
-                : null
-            await view.init(last ? { lastLocation: last } : { showTextStart: true })
             const book = view.book
+
+            let calibrePos = null
+            if (!initialLocation && useCalibreBookmark) {
+                try {
+                    const marks = await book?.getCalibreBookmarks?.()
+                    const lastRead = marks?.find?.(m => m.type === 'last-read')
+                    if (lastRead?.pos_type === 'epubcfi' && lastRead.pos) {
+                        calibrePos = lastRead.pos
+                    }
+                } catch (e) {
+                    // No bookmark file, or unreadable. Not an error -- most
+                    // books have never been opened on the desktop.
+                }
+            }
+
+            const source = initialLocation ?? calibrePos
+            const fromCalibre = initialLocation ? isCalibre : calibrePos != null
+            const last = source
+                ? (fromCalibre ? CFI.fromCalibrePos(source) : source)
+                : null
+
+            await view.init(last ? { lastLocation: last } : { showTextStart: true })
             post({
                 type: 'opened',
                 title: book?.metadata?.title ?? null,
@@ -146,6 +169,8 @@ window.__reader = {
                     return Array.isArray(a) ? a.map(x => x?.name ?? x).join(', ') : (a?.name ?? a ?? null)
                 })(),
                 sectionCount: book?.sections?.length ?? 0,
+                calibrePos,
+                resolvedCfi: last,
                 diag: `vw=${window.innerWidth}x${window.innerHeight} ` +
                       `renderer=${!!view.renderer} ` +
                       `contents=${view.renderer?.getContents?.()?.length ?? -1}`,

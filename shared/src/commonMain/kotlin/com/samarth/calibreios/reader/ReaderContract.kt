@@ -37,16 +37,27 @@ sealed interface ReaderCommand {
      *
      * Set [isCalibreLocation] when [initialLocation] came from
      * `META-INF/calibre_bookmarks.txt`.
+     *
+     * [useCalibreBookmark] resumes at the Mac desktop viewer's position without
+     * being told what it is: the engine reads it from the EPUB's own
+     * `META-INF/calibre_bookmarks.txt`. This is the whole Mac -> iPhone position
+     * path (#4, #6, #8), and it costs no extra request because the position
+     * ships inside the file we already downloaded. An explicit
+     * [initialLocation] always wins -- the phone's own position takes
+     * precedence, and a differing Mac position is offered, never applied
+     * silently (#8, "ask, never jump").
      */
     data class Open(
         val url: String,
         val initialLocation: String? = null,
         val isCalibreLocation: Boolean = false,
+        val useCalibreBookmark: Boolean = false,
     ) : ReaderCommand {
         override fun toJs() = "window.__reader.open(" +
             "${url.jsString()}, " +
             "${initialLocation?.jsString() ?: "null"}, " +
-            "$isCalibreLocation)"
+            "$isCalibreLocation, " +
+            "$useCalibreBookmark)"
     }
 
     /**
@@ -142,6 +153,10 @@ sealed interface ReaderEvent {
         val title: String? = null,
         val author: String? = null,
         val sectionCount: Int = 0,
+        /** The raw calibre position found in the EPUB, if any. */
+        val calibrePos: String? = null,
+        /** What the engine actually resumed at, after conversion. */
+        val resolvedCfi: String? = null,
         val diag: String? = null,
     ) : ReaderEvent
 

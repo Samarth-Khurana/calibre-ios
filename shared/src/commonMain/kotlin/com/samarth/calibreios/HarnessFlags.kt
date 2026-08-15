@@ -17,3 +17,10 @@ internal expect fun autoplayEnabled(): Boolean
  * `SIMCTL_CHILD_CALIBRE_DELIMITER=Clause`.
  */
 internal expect fun autoplayDelimiter(): String?
+
+/**
+ * Harness-only: absolute path to an EPUB to open instead of the bundled
+ * fixture, so a real book carrying a real calibre position can be tested
+ * before the download path exists. Set with `SIMCTL_CHILD_CALIBRE_BOOK=/path`.
+ */
+internal expect fun testBookPath(): String?

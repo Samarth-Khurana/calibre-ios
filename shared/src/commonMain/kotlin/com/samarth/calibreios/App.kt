@@ -49,6 +49,7 @@ import com.samarth.calibreios.tts.createSpeaker
  * (common) and `IosSpeaker` (iOS).
  */
 private const val FIXTURE_URL = "epubapp://reader/fixture.epub"
+private const val BOOK_URL = "epubapp://book/current"
 
 @Composable
 fun App() {
@@ -74,6 +75,7 @@ private fun HarnessContent(systemDark: Boolean) {
     var session by remember { mutableStateOf<TtsSession?>(null) }
     var status by remember { mutableStateOf("loading…") }
     var location by remember { mutableStateOf("") }
+    var resume by remember { mutableStateOf("") }
     val log = remember { mutableStateListOf<String>() }
 
     var delimiter by remember {
@@ -144,12 +146,28 @@ private fun HarnessContent(systemDark: Boolean) {
                 when (event) {
                     is ReaderEvent.Ready -> {
                         status = "bridge ready"
-                        controller?.send(ReaderCommand.Open(FIXTURE_URL))
+                        // A real calibre book if one was supplied, so the
+                        // Mac -> iPhone resume path can be exercised against a
+                        // genuine position; otherwise the bundled fixture,
+                        // which has never been opened on a desktop.
+                        val real = testBookPath()
+                        if (real != null) {
+                            controller?.setBookPath(real)
+                            controller?.send(
+                                ReaderCommand.Open(BOOK_URL, useCalibreBookmark = true)
+                            )
+                        } else {
+                            controller?.send(ReaderCommand.Open(FIXTURE_URL))
+                        }
                     }
 
                     is ReaderEvent.Opened -> {
                         rendered = true
                         status = "opened: ${event.title ?: "?"} (${event.sectionCount} sec)"
+                        resume = when {
+                            event.calibrePos == null -> "no calibre position in this book"
+                            else -> "calibre ${event.calibrePos} → ${event.resolvedCfi ?: "unresolved"}"
+                        }
                     }
 
                     is ReaderEvent.Location -> {
@@ -254,6 +272,7 @@ private fun HarnessContent(systemDark: Boolean) {
             // ---- readout --------------------------------------------------------
             Line("$state · $status")
             Line(location)
+            if (resume.isNotEmpty()) Line(resume)
             Line(
                 "voices: ${voices.size} · " +
                     (voices.firstOrNull { it.identifier == voiceId }?.let {
