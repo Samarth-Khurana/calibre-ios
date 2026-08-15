@@ -7,3 +7,5 @@ internal actual fun autoplayDelimiter(): String? = null
 internal actual fun testBookPath(): String? = null
 
 internal actual fun autoOpenBookId(): Int? = null
+
+internal actual fun harnessScreen(): String? = null

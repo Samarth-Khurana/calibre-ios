@@ -19,3 +19,7 @@ internal actual fun testBookPath(): String? =
 @OptIn(ExperimentalForeignApi::class)
 internal actual fun autoOpenBookId(): Int? =
     getenv("CALIBRE_OPEN_ID")?.toKString()?.toIntOrNull()
+
+@OptIn(ExperimentalForeignApi::class)
+internal actual fun harnessScreen(): String? =
+    getenv("CALIBRE_SCREEN")?.toKString()?.takeIf { it.isNotEmpty() }

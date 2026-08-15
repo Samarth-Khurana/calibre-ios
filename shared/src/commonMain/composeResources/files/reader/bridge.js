@@ -202,6 +202,7 @@ window.__reader = {
             if (t.highlight) highlightColor = t.highlight
             view.renderer.setStyles(`
                 @namespace epub "http://www.idpf.org/2007/ops";
+
                 html {
                     color-scheme: ${t.dark ? 'dark' : 'light'};
                     font-size: ${t.fontSize}em;
@@ -213,13 +214,41 @@ window.__reader = {
                 a, a:link, a:visited {
                     color: ${t.link} !important;
                 }
+
+                /* The reader's font wins for body text and headings (#10).
+                   The :not() chain carries the exemptions that decision named:
+                     - code keeps a monospace face, or it stops lining up;
+                     - text tagged as another language keeps the publisher's
+                       font, which may be the only one with the glyphs;
+                     - verse keeps its own, because the typography is the point.
+                   Exempting by NOT matching, rather than overriding and then
+                   trying to undo it: there is no way to restore a value we
+                   never knew. */
+                /* NOTE: no whitespace between the :is() and the :not()s. A
+                   space is a descendant combinator, so breaking this across
+                   lines silently changes the meaning to "a non-code element
+                   INSIDE a paragraph" -- which matches inline children but not
+                   the paragraph itself, so the font never applies. */
+                :is(p, li, blockquote, dd, div, h1, h2, h3, h4, h5, h6):not(:is(pre, code, kbd, samp, pre *, code *)):not(:is([lang]:not([lang|="en"]), [lang]:not([lang|="en"]) *)):not(:is([epub|type~="z3998:verse"], [epub|type~="z3998:verse"] *)) {
+                    font-family: ${t.fontFamily} !important;
+                }
+
                 p, li, blockquote, dd, div {
-                    font-family: ${t.fontFamily};
                     line-height: ${t.lineHeight};
                     text-align: ${t.justify ? 'justify' : 'start'};
                     -webkit-hyphens: ${t.hyphenate ? 'auto' : 'manual'};
                     hyphens: ${t.hyphenate ? 'auto' : 'manual'};
                 }
+
+                pre, code, kbd, samp {
+                    font-family: ui-monospace, Menlo, monospace !important;
+                }
+
+                /* Dark themes only. A white-background diagram on a near-black
+                   page is a flashbang at exactly the moment you chose dark
+                   mode. Dimming rather than inverting: inversion fixes diagrams
+                   and ruins photographs, and EPUBs do not mark which is which. */
+                ${t.dark ? 'img, svg, picture, image { filter: brightness(.8); }' : ''}
             `)
             if (t.marginPx != null) view.renderer.setAttribute('margin', `${t.marginPx}px`)
             post({ type: 'themeApplied' })

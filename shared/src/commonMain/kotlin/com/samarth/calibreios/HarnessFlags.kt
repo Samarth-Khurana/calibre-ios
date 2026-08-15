@@ -31,3 +31,9 @@ internal expect fun testBookPath(): String?
  * Set with `SIMCTL_CHILD_CALIBRE_OPEN_ID=2`.
  */
 internal expect fun autoOpenBookId(): Int?
+
+/**
+ * Harness-only: which screen to land on at launch (`settings` or `reader`), so
+ * screens can be inspected without taps. `SIMCTL_CHILD_CALIBRE_SCREEN=settings`.
+ */
+internal expect fun harnessScreen(): String?

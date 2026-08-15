@@ -18,6 +18,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.ui.Alignment
@@ -49,6 +50,7 @@ private fun humanSize(bytes: Long): String = when {
 @Composable
 fun LibraryScreen(
     library: Library,
+    onSettings: () -> Unit,
     onOpen: (CalibreServer, CalibreBook, String) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
@@ -116,7 +118,14 @@ fun LibraryScreen(
 
     Column(Modifier.fillMaxSize().padding(12.dp)) {
 
-        Text("Calibre library", style = MaterialTheme.typography.titleMedium)
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Calibre library", style = MaterialTheme.typography.titleMedium)
+            TextButton(onClick = onSettings) { Text("Settings") }
+        }
 
         Row(
             Modifier.fillMaxWidth().padding(vertical = 8.dp),
