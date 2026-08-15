@@ -1,5 +1,11 @@
 package com.samarth.calibreios
 
-import androidx.compose.ui.window.ComposeUIViewController
+import platform.UIKit.UIViewController
 
-fun MainViewController() = ComposeUIViewController { App() }
+/**
+ * The app's entry point, imported from Swift as `MainViewControllerKt`.
+ *
+ * The name of this *file* determines that symbol, so it must not move — the
+ * implementation lives in `SystemChrome.ios.kt` with the controller it builds.
+ */
+fun MainViewController(): UIViewController = createRootController()

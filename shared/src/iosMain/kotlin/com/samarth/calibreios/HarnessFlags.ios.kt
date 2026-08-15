@@ -31,3 +31,7 @@ internal actual fun harnessSearch(): String? =
 @OptIn(ExperimentalForeignApi::class)
 internal actual fun harnessMark(): Boolean =
     getenv("CALIBRE_MARK")?.toKString().isNullOrEmpty().not()
+
+@OptIn(ExperimentalForeignApi::class)
+internal actual fun harnessFullScreen(): Boolean =
+    getenv("CALIBRE_FULLSCREEN")?.toKString().isNullOrEmpty().not()

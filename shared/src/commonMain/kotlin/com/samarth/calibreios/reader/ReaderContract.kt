@@ -298,6 +298,17 @@ sealed interface ReaderEvent {
         val text: String = "",
     ) : ReaderEvent
 
+    /**
+     * The reader tapped the page.
+     *
+     * Only fires for a plain tap: link taps and taps that dismiss a selection
+     * are filtered out in the bridge, because both would otherwise flip the
+     * chrome as a side effect of doing something else.
+     */
+    @Serializable
+    @SerialName("tap")
+    data object Tap : ReaderEvent
+
     @Serializable
     @SerialName("themeApplied")
     data object ThemeApplied : ReaderEvent

@@ -190,6 +190,17 @@ private fun ReaderScreen(
     var macOffer by remember { mutableStateOf<String?>(null) }
     var lastToc by remember { mutableStateOf("") }
 
+    // Reading-session state, deliberately not persisted (#full-screen): opening
+    // a book always shows the controls, so they are never hidden at the moment
+    // you are looking for them.
+    var fullScreen by remember { mutableStateOf(harnessFullScreen()) }
+
+    // The status bar belongs to the platform, so it is set imperatively rather
+    // than composed -- and must be restored when the reader closes, or the
+    // library would inherit a hidden status bar.
+    LaunchedEffect(fullScreen) { setSystemChromeHidden(fullScreen) }
+    DisposableEffect(Unit) { onDispose { setSystemChromeHidden(false) } }
+
     // Read once: the phone's own position is what the book opens at, and a
     // differing Mac position is offered rather than applied (#8).
     val saved = remember(book) { positions.get(book.libraryId, book.bookId) }
@@ -284,7 +295,7 @@ private fun ReaderScreen(
 
         // Ask, never jump (#8). Reading is never silently discarded, so this is
         // an offer with a dismiss, not an automatic move.
-        macOffer?.let { macCfi ->
+        if (!fullScreen) macOffer?.let { macCfi ->
             Row(
                 Modifier.fillMaxWidth()
                     .background(MaterialTheme.colorScheme.secondaryContainer)
@@ -311,7 +322,7 @@ private fun ReaderScreen(
         // A top bar rather than more buttons below: five controls in one row
         // squeezed the last one to a sliver, and navigation out of the reader
         // does not belong next to the read-aloud transport anyway.
-        Row(
+        if (!fullScreen) Row(
             Modifier.fillMaxWidth().padding(horizontal = 8.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
@@ -456,6 +467,8 @@ private fun ReaderScreen(
                         }
                     }
 
+                    is ReaderEvent.Tap -> fullScreen = !fullScreen
+
                     is ReaderEvent.Error -> {
                         println("[calibre] reader error @${event.where}: ${event.message}")
                         status = "error: ${event.message}"
@@ -466,7 +479,7 @@ private fun ReaderScreen(
             },
         )
 
-        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+        if (!fullScreen) Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
 
             // Our own bar rather than an item in the iOS callout (#13): the
             // native menu needs UIMenu interop with no clean Kotlin/Native

@@ -13,3 +13,5 @@ internal actual fun harnessScreen(): String? = null
 internal actual fun harnessSearch(): String? = null
 
 internal actual fun harnessMark(): Boolean = false
+
+internal actual fun harnessFullScreen(): Boolean = false

@@ -43,3 +43,6 @@ internal expect fun harnessSearch(): String?
 
 /** Harness-only: bookmark the page on open, and log the resulting mark list. */
 internal expect fun harnessMark(): Boolean
+
+/** Harness-only: open the reader already in full screen. */
+internal expect fun harnessFullScreen(): Boolean

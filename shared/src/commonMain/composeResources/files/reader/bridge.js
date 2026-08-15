@@ -43,6 +43,8 @@ view.addEventListener('relocate', ({ detail }) => {
     })
 })
 
+let hadSelectionAtPointerDown = false
+
 const currentSelectionRange = () => {
     for (const c of view.renderer?.getContents?.() ?? []) {
         const sel = c.doc?.defaultView?.getSelection?.()
@@ -57,7 +59,23 @@ view.addEventListener('load', ({ detail }) => {
     if (!doc) return
     doc.addEventListener('click', e => {
         const a = e.target.closest?.('a[href]')
-        if (a) e.preventDefault()
+        if (a) { e.preventDefault(); return }
+
+        // Tap toggles the reader chrome. Two taps must NOT count:
+        //  - one that dismisses a selection (the browser clears it after this
+        //    handler, so the check is "was there a selection just before"),
+        //  - one on a link, handled above.
+        // Getting the first wrong makes "Read from here" feel broken, because
+        // dismissing a selection would also flip the chrome.
+        if (hadSelectionAtPointerDown) return
+        post({ type: 'tap' })
+    }, true)
+
+    // Sampled on pointerdown: by the time `click` fires the selection may
+    // already have been cleared by the tap itself.
+    doc.addEventListener('pointerdown', () => {
+        const sel = doc.defaultView?.getSelection?.()
+        hadSelectionAtPointerDown = !!(sel && !sel.isCollapsed)
     }, true)
 
     // Report selection so the shell can offer "Read from here" (#13). The bar
