@@ -40,6 +40,7 @@ import com.samarth.calibreios.reader.PositionStore
 import com.samarth.calibreios.reader.ReadingPosition
 import com.samarth.calibreios.reader.Mark
 import com.samarth.calibreios.reader.MarkStore
+import com.samarth.calibreios.nowplaying.createNowPlaying
 import com.samarth.calibreios.reader.SearchHit
 import com.samarth.calibreios.reader.mergeMarks
 import com.samarth.calibreios.reader.TocEntry
@@ -195,12 +196,38 @@ private fun ReaderScreen(
     var lastSaved by remember(book) { mutableStateOf(saved) }
 
     val scope = rememberCoroutineScope()
+    val nowPlaying = remember { createNowPlaying() }
 
     val state by (session?.state?.collectAsState()
         ?: remember { mutableStateOf(TtsSession.State.Idle) })
     val current by (session?.current?.collectAsState() ?: remember { mutableStateOf(null) })
 
     LaunchedEffect(session, ttsSettings) { session?.update(ttsSettings) }
+
+    // The lock screen drives the same session as the in-app transport -- one
+    // set of behaviour, two surfaces (#19).
+    LaunchedEffect(session) {
+        val s = session ?: return@LaunchedEffect
+        nowPlaying.setHandlers(
+            onPlay = { if (s.state.value == TtsSession.State.Paused) s.resume() else s.start() },
+            onPause = { s.pause() },
+            onNext = { s.skip() },
+            onPrevious = { s.previous() },
+        )
+    }
+
+    // Keep the lock screen honest about what is playing.
+    LaunchedEffect(state, lastToc, book) {
+        nowPlaying.update(
+            title = book.title,
+            chapter = lastToc,
+            playing = state == TtsSession.State.Speaking,
+        )
+    }
+
+    // Stop claiming the lock screen when the reader closes; leaving stale
+    // controls there implies a session that no longer exists.
+    DisposableEffect(Unit) { onDispose { nowPlaying.clear() } }
 
     // Keyed on `rendered`, not on the controller: `setTheme` goes through
     // `renderer.setStyles`, and the renderer does not exist until the book has

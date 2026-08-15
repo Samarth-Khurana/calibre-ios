@@ -85,6 +85,22 @@ sealed interface SpeechEvent {
         override val utteranceId: Long,
     ) : SpeechEvent
 
+    /** Another app or a call took the audio. Speech has already stopped. */
+    data class Interrupted(
+        override val atMillis: Long,
+        override val utteranceId: Long = 0,
+    ) : SpeechEvent
+
+    /**
+     * The interruption is over. [mayResume] is the system's opinion, and it is
+     * worth honouring: resuming uninvited talks over whatever took the audio.
+     */
+    data class InterruptionEnded(
+        override val atMillis: Long,
+        val mayResume: Boolean,
+        override val utteranceId: Long = 0,
+    ) : SpeechEvent
+
     /** The engine could not speak -- no voice, audio session refused, etc. */
     data class Failed(
         override val atMillis: Long,

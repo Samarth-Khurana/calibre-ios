@@ -12,6 +12,12 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import platform.AVFAudio.AVAudioSession
 import platform.AVFAudio.AVAudioSessionCategoryPlayback
+import platform.AVFAudio.AVAudioSessionInterruptionNotification
+import platform.AVFAudio.AVAudioSessionInterruptionOptionKey
+import platform.AVFAudio.AVAudioSessionInterruptionOptionShouldResume
+import platform.AVFAudio.AVAudioSessionInterruptionTypeBegan
+import platform.AVFAudio.AVAudioSessionInterruptionTypeEnded
+import platform.AVFAudio.AVAudioSessionInterruptionTypeKey
 import platform.AVFAudio.AVAudioSessionModeSpokenAudio
 import platform.AVFAudio.AVSpeechBoundary
 import platform.AVFAudio.AVSpeechSynthesisVoice
@@ -22,6 +28,8 @@ import platform.AVFAudio.AVSpeechSynthesizer
 import platform.AVFAudio.AVSpeechSynthesizerDelegateProtocol
 import platform.AVFAudio.AVSpeechUtterance
 import platform.Foundation.NSDate
+import platform.Foundation.NSNotificationCenter
+import platform.Foundation.NSNumber
 import platform.Foundation.NSError
 import platform.Foundation.timeIntervalSince1970
 import platform.darwin.NSObject
@@ -127,6 +135,7 @@ class IosSpeaker : Speaker {
     init {
         synthesizer.delegate = delegate
         configureAudioSession()
+        observeInterruptions()
     }
 
     /**
@@ -194,6 +203,41 @@ class IosSpeaker : Speaker {
         // Reports as `didCancel`, never `didFinish`, so the sequencing loop can
         // tell "the reader stopped me" from "the chunk ended".
         synthesizer.stopSpeakingAtBoundary(AVSpeechBoundary.AVSpeechBoundaryImmediate)
+    }
+
+    /**
+     * Pause for a phone call or another app taking audio, and report it.
+     *
+     * Without this the synthesizer is stopped by the system and the session
+     * would sit thinking it is still speaking -- so read-aloud would appear to
+     * hang rather than pause.
+     */
+    private fun observeInterruptions() {
+        NSNotificationCenter.defaultCenter.addObserverForName(
+            name = AVAudioSessionInterruptionNotification,
+            `object` = null,
+            queue = null,
+        ) { notification ->
+            runCatching {
+                val type = (notification?.userInfo
+                    ?.get(AVAudioSessionInterruptionTypeKey) as? NSNumber)?.unsignedLongValue
+                when (type) {
+                    AVAudioSessionInterruptionTypeBegan -> {
+                        emit(SpeechEvent.Interrupted(now()))
+                    }
+                    AVAudioSessionInterruptionTypeEnded -> {
+                        val options = (notification?.userInfo
+                            ?.get(AVAudioSessionInterruptionOptionKey) as? NSNumber)
+                            ?.unsignedLongValue ?: 0uL
+                        // Only resume when the system says we may; resuming
+                        // uninvited talks over whatever took the audio.
+                        val mayResume =
+                            (options and AVAudioSessionInterruptionOptionShouldResume) != 0uL
+                        emit(SpeechEvent.InterruptionEnded(now(), mayResume))
+                    }
+                }
+            }
+        }
     }
 
     override fun voices(languagePrefix: String): List<VoiceInfo> =

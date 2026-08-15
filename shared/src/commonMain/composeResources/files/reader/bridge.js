@@ -432,7 +432,20 @@ window.__reader = {
     ttsFromCurrent() {
         try {
             const range = currentSelectionRange() ?? view.lastLocation?.range ?? null
-            const ssml = range ? view.tts.from(range) : view.tts.start()
+
+            // foliate's TTS.from() destructures the result of an internal
+            // find() without checking it: when no block matches the range it
+            // throws "undefined is not an object" rather than returning
+            // nothing. That happens legitimately -- a range in front matter, or
+            // one belonging to a section other than the segmented one -- so
+            // treat a throw as "could not locate" and fall back to the start of
+            // the section rather than failing the whole request.
+            let ssml = null
+            if (range) {
+                try { ssml = view.tts.from(range) } catch (e) { ssml = null }
+            }
+            if (!ssml) ssml = view.tts.start()
+
             post({ type: 'ttsChunks', chunks: ssmlToChunks(ssml), done: !ssml })
         } catch (e) { fail('ttsFromCurrent', e) }
     },

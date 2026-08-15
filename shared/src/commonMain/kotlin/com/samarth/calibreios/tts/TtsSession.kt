@@ -51,6 +51,38 @@ class TtsSession(
     private val speaker: Speaker,
 ) {
 
+    init {
+        // A call or another app taking audio stops the synthesizer outright.
+        // Without this the session would sit in Speaking forever, waiting on an
+        // utterance that will never finish -- read-aloud would appear to hang
+        // rather than pause.
+        scope.launch {
+            speaker.events.collect { event ->
+                when (event) {
+                    is SpeechEvent.Interrupted -> if (_state.value == State.Speaking) {
+                        _state.value = State.Paused
+                        interruptedWhileSpeaking = true
+                        _trace.tryEmit("interrupted")
+                    }
+                    is SpeechEvent.InterruptionEnded -> {
+                        // Honour the system's opinion: resuming uninvited talks
+                        // over whatever took the audio.
+                        if (interruptedWhileSpeaking && event.mayResume) {
+                            interruptedWhileSpeaking = false
+                            _trace.tryEmit("resuming after interruption")
+                            start()
+                        } else {
+                            interruptedWhileSpeaking = false
+                        }
+                    }
+                    else -> Unit
+                }
+            }
+        }
+    }
+
+    private var interruptedWhileSpeaking = false
+
     data class Settings(
         val delimiter: TtsDelimiter = TtsDelimiter.Sentence,
         /** How long the highlight is held before the voice starts. */
@@ -66,6 +98,10 @@ class TtsSession(
     /** The chunk currently highlighted/spoken, for UI. */
     private val _current = MutableStateFlow<TtsChunk?>(null)
     val current: StateFlow<TtsChunk?> = _current
+
+    /** What is being read, for the lock screen. Blank when idle. */
+    private val _nowReading = MutableStateFlow("")
+    val nowReading: StateFlow<String> = _nowReading
 
     /** Human-readable trace of what the loop did, for the prototype's log pane. */
     private val _trace = MutableSharedFlow<String>(replay = 40, extraBufferCapacity = 80)
@@ -224,6 +260,7 @@ class TtsSession(
             if (index < 0) index = 0
             val chunk = pending[index]
             _current.value = chunk
+            _nowReading.value = chunk.text
 
             // 1. Highlight the chunk we are ABOUT to read. This also scrolls it
             //    into view, which is what carries the voice across a page break.

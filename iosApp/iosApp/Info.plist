@@ -9,6 +9,14 @@
 	     with it, the user is prompted once. Denial is silent and surfaces as
 	     an ordinary connection failure, which is why Library.describe() names
 	     it as a possible cause rather than blaming the network. -->
+	<!-- Speech must survive the screen locking; read-aloud is the reason this
+	     app exists (#19). Without this the synthesizer is cut off the moment
+	     the app leaves the foreground. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
+
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Calibre Reader connects to the calibre content server on your Mac to list and download your books.</string>
 
