@@ -266,6 +266,12 @@ data class ReaderTheme(
     val hyphenate: Boolean = true,
     val fg: String = "#111111",
     val bg: String = "#ffffff",
+    /**
+     * Link colour. Needs overriding rather than inheriting: EPUBs hard-code
+     * their own (usually the default browser blue), which is unreadable on a
+     * dark background -- a table of contents is entirely links.
+     */
+    val link: String = "#0645ad",
     val dark: Boolean = false,
     val marginPx: Int? = null,
 ) {
@@ -278,6 +284,7 @@ data class ReaderTheme(
         append("\"hyphenate\":").append(hyphenate).append(',')
         append("\"fg\":").append(fg.jsonString()).append(',')
         append("\"bg\":").append(bg.jsonString()).append(',')
+        append("\"link\":").append(link.jsonString()).append(',')
         append("\"dark\":").append(dark)
         marginPx?.let { append(",\"marginPx\":").append(it) }
         append('}')
@@ -285,8 +292,9 @@ data class ReaderTheme(
 
     companion object {
         val Light = ReaderTheme()
-        val Sepia = ReaderTheme(fg = "#3b2f1e", bg = "#f6ecd9")
-        val Dark = ReaderTheme(fg = "#d8d8d8", bg = "#121212", dark = true)
+        val Sepia = ReaderTheme(fg = "#3b2f1e", bg = "#f6ecd9", link = "#7a4b2a")
+        val Dark =
+            ReaderTheme(fg = "#d8d8d8", bg = "#121212", link = "#8ab4f8", dark = true)
     }
 }
 

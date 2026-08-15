@@ -150,6 +150,9 @@ window.__reader = {
                     color: ${t.fg} !important;
                     background: ${t.bg} !important;
                 }
+                a, a:link, a:visited {
+                    color: ${t.link} !important;
+                }
                 p, li, blockquote, dd, div {
                     font-family: ${t.fontFamily};
                     line-height: ${t.lineHeight};
