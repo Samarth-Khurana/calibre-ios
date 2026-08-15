@@ -163,12 +163,25 @@ window.__reader = {
         } catch (e) { fail('setTheme', e) }
     },
 
-    // granularity: 'sentence' (delimiter-style chunking) or 'word'
-    async ttsInit(granularity) {
+    // spec: 'sentence' | 'word' | { custom: '<regex source>' }
+    //
+    // The custom form is the calibre-style delimiter and is served by a local
+    // patch to foliate's tts.js; see the LOCAL PATCH block there.
+    async ttsInit(spec) {
         try {
-            await view.initTTS(granularity || 'sentence')
+            const granularity = spec || 'sentence'
+            // initTTS is a no-op when TTS is already bound to this document, so
+            // changing the delimiter mid-page would otherwise be silently
+            // ignored. Dropping the instance forces re-segmentation.
+            view.tts = null
+            await view.initTTS(granularity)
             ttsReady = true
-            post({ type: 'ttsReady', granularity: granularity || 'sentence' })
+            post({
+                type: 'ttsReady',
+                granularity: typeof granularity === 'string'
+                    ? granularity
+                    : `custom:${granularity.custom}`,
+            })
         } catch (e) { fail('ttsInit', e) }
     },
 

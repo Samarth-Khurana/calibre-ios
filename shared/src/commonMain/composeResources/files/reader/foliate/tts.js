@@ -21,7 +21,59 @@ const getAlphabet = el => {
     return x ? x : el.parentElement ? getAlphabet(el.parentElement) : null
 }
 
+// --- LOCAL PATCH (#9) -------------------------------------------------------
+// Upstream foliate segments only by `Intl.Segmenter` granularity, i.e.
+// 'word' | 'sentence' | 'grapheme'. Calibre's TTS instead lets the reader name
+// the delimiter it wants to break on, which is the behaviour this app exists to
+// reproduce. `getCustomSegmenter` adds that as a third mode, matching the
+// generator signature `getSegmenter` already returns so nothing downstream
+// changes: pass `{ custom: '<regex source>' }` as the granularity.
+//
+// Keep this patch marked -- it has to be re-applied when foliate-js is updated.
+const getCustomSegmenter = pattern => {
+    const re = new RegExp(pattern, 'gu')
+    return function* (strs, makeRange) {
+        const str = strs.join('')
+
+        // Map a char offset in the joined string back to (index into strs,
+        // offset within that string), which is what makeRange takes.
+        const locate = pos => {
+            let i = 0, sum = 0
+            while (i < strs.length - 1 && sum + strs[i].length <= pos) sum += strs[i++].length
+            return [i, pos - sum]
+        }
+
+        let name = 0
+        const emit = function* (from, to) {
+            const slice = str.slice(from, to)
+            // Trim inside the offsets, so the highlight hugs the text rather
+            // than trailing across the whitespace up to the next chunk.
+            const start = from + (slice.length - slice.trimStart().length)
+            const end = to - (slice.length - slice.trimEnd().length)
+            if (end <= start) return
+            const [si, so] = locate(start)
+            const [ei, eo] = locate(end - 1)
+            yield [(name++).toString(), makeRange(si, so, ei, eo + 1)]
+        }
+
+        let from = 0
+        let m
+        re.lastIndex = 0
+        while ((m = re.exec(str))) {
+            // A zero-width match would spin forever and produce empty chunks.
+            if (m[0].length === 0) { re.lastIndex++; continue }
+            const to = m.index + m[0].length
+            yield* emit(from, to)
+            from = to
+        }
+        yield* emit(from, str.length)
+    }
+}
+// --- end local patch --------------------------------------------------------
+
 const getSegmenter = (lang = 'en', granularity = 'word') => {
+    if (granularity && typeof granularity === 'object' && granularity.custom)
+        return getCustomSegmenter(granularity.custom)
     const segmenter = new Intl.Segmenter(lang, { granularity })
     const granularityIsWord = granularity === 'word'
     return function* (strs, makeRange) {

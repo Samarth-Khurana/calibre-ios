@@ -85,9 +85,14 @@ sealed interface ReaderCommand {
         override fun toJs() = "window.__reader.setTheme(${theme.toJson().jsString()})"
     }
 
-    /** Prepare TTS segmentation. [granularity] is `sentence` or `word`. */
-    data class TtsInit(val granularity: TtsGranularity = TtsGranularity.Sentence) : ReaderCommand {
-        override fun toJs() = "window.__reader.ttsInit(${granularity.wire.jsString()})"
+    /**
+     * (Re-)segment the current section for TTS.
+     *
+     * Safe to send again with a different [delimiter]; the bridge drops the
+     * existing TTS instance so the new segmentation takes effect immediately.
+     */
+    data class TtsInit(val delimiter: TtsDelimiter = TtsDelimiter.Sentence) : ReaderCommand {
+        override fun toJs() = "window.__reader.ttsInit(${delimiter.toJsArg()})"
     }
 
     /** Request the next block of chunks; replies with [ReaderEvent.TtsChunks]. */
@@ -183,9 +188,66 @@ data class TtsChunk(
 
 // ---------------------------------------------------------------- theme
 
-enum class TtsGranularity(val wire: String) {
-    Sentence("sentence"),
-    Word("word"),
+// ---------------------------------------------------------------- delimiter
+
+/**
+ * How the text is cut into speakable chunks -- the unit that gets highlighted,
+ * paused before, and spoken.
+ *
+ * [Sentence] and [Word] are `Intl.Segmenter` granularities, so they are
+ * locale-aware and handle abbreviations and quotes correctly. [Custom] is the
+ * calibre-style "tell me your delimiter" mode, added by a local patch to
+ * foliate's `tts.js`; it is a plain regex over the block's text and knows
+ * nothing about language.
+ *
+ * Prefer [Sentence]: it is what a reader means by "a line" almost all the time,
+ * and it does not mis-split on "Mr." or "e.g.". [Custom] exists for the cases
+ * sentence segmentation cannot express -- verse, dialogue, scripture.
+ */
+sealed interface TtsDelimiter {
+
+    /** The JS argument for `__reader.ttsInit`. */
+    fun toJsArg(): String
+
+    /** Human-readable, for settings UI. */
+    val label: String
+
+    data object Sentence : TtsDelimiter {
+        override fun toJsArg() = "\"sentence\""
+        override val label get() = "Sentence"
+    }
+
+    data object Word : TtsDelimiter {
+        override fun toJsArg() = "\"word\""
+        override val label get() = "Word"
+    }
+
+    /**
+     * Break wherever [pattern] matches. The delimiter is kept at the end of the
+     * chunk it terminates, so punctuation is spoken with its own sentence.
+     *
+     * [pattern] is a JS regex source compiled with the `u` flag. Zero-width
+     * matches are skipped rather than looping. A pattern that matches nothing
+     * yields one chunk per block, which is a legitimate outcome (read the whole
+     * paragraph at once), not an error.
+     */
+    data class Custom(val pattern: String, override val label: String) : TtsDelimiter {
+        override fun toJsArg() = "{\"custom\": ${pattern.jsString()}}"
+    }
+
+    companion object {
+        /** Every hard stop, plus closing quotes and brackets. */
+        val Punctuation = Custom("[.!?…]+[\"'”’)\\]]*\\s+", "Punctuation")
+
+        /** One line of verse or dialogue per chunk. */
+        val LineBreak = Custom("\\n+", "Line break")
+
+        /** Breath-length chunks: commas and semicolons as well as full stops. */
+        val Clause = Custom("[,;:.!?…]+\\s+", "Clause")
+
+        val presets: List<TtsDelimiter> =
+            listOf(Sentence, Punctuation, Clause, LineBreak, Word)
+    }
 }
 
 /**
