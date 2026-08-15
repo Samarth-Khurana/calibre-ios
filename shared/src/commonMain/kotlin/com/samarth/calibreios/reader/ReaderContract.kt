@@ -27,9 +27,26 @@ sealed interface ReaderCommand {
     /** The JS expression to evaluate in the web view. */
     fun toJs(): String
 
-    /** Open a book. [url] is served by the app's own scheme handler. */
-    data class Open(val url: String) : ReaderCommand {
-        override fun toJs() = "window.__reader.open(${url.jsString()})"
+    /**
+     * Open a book, optionally resuming at [initialLocation].
+     *
+     * Resuming is part of opening rather than a follow-up [GoTo]: foliate's
+     * `open()` only parses, and `init()` is what renders -- and it accepts the
+     * start position. Seeking afterwards would render the first page and then
+     * visibly jump.
+     *
+     * Set [isCalibreLocation] when [initialLocation] came from
+     * `META-INF/calibre_bookmarks.txt`.
+     */
+    data class Open(
+        val url: String,
+        val initialLocation: String? = null,
+        val isCalibreLocation: Boolean = false,
+    ) : ReaderCommand {
+        override fun toJs() = "window.__reader.open(" +
+            "${url.jsString()}, " +
+            "${initialLocation?.jsString() ?: "null"}, " +
+            "$isCalibreLocation)"
     }
 
     /**
@@ -115,6 +132,7 @@ sealed interface ReaderEvent {
         val title: String? = null,
         val author: String? = null,
         val sectionCount: Int = 0,
+        val diag: String? = null,
     ) : ReaderEvent
 
     /**

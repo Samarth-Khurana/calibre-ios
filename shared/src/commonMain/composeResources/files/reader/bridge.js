@@ -14,7 +14,10 @@ const view = document.getElementById('view')
 
 const post = event => {
     try {
-        window.webkit.messageHandlers.reader.postMessage(event)
+        // Stringify here, not in an injected shim: window.webkit.messageHandlers
+        // is not writable, so overriding postMessage from a user script silently
+        // fails and Kotlin receives an NSDictionary description instead of JSON.
+        window.webkit.messageHandlers.reader.postMessage(JSON.stringify(event))
     } catch (e) {
         // No native host (e.g. opened in a plain browser for debugging).
         console.log('[bridge]', JSON.stringify(event))
@@ -58,35 +61,48 @@ let ttsReady = false
 
 const ssmlToChunks = ssml => {
     const doc = new DOMParser().parseFromString(String(ssml), 'application/xml')
-    const marks = [...doc.querySelectorAll('mark')]
-    if (!marks.length) {
-        const text = doc.documentElement.textContent.trim()
+    const root = doc.documentElement
+
+    // Walk in document order, opening a new chunk at each <mark> and
+    // accumulating text nodes into whichever chunk is currently open.
+    const walker = doc.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT)
+    const chunks = []
+    let current = null
+    let node
+    while ((node = walker.nextNode())) {
+        if (node.nodeType === Node.ELEMENT_NODE) {
+            if (node.localName === 'mark') {
+                current = { mark: node.getAttribute('name'), text: '' }
+                chunks.push(current)
+            }
+            continue
+        }
+        if (current) current.text += node.textContent
+    }
+
+    if (!chunks.length) {
+        const text = root.textContent.trim()
         return text ? [{ mark: null, text }] : []
     }
-    // Text belonging to a mark is everything between it and the next mark.
-    return marks.map((m, i) => {
-        const next = marks[i + 1] ?? null
-        let text = ''
-        const walker = doc.createTreeWalker(doc.documentElement, NodeFilter.SHOW_TEXT)
-        let started = false
-        let node
-        while ((node = walker.nextNode())) {
-            const posM = m.compareDocumentPosition(node)
-            if (!started && (posM & Node.DOCUMENT_POSITION_FOLLOWING)) started = true
-            if (!started) continue
-            if (next && (next.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_PRECEDING)) break
-            text += node.textContent
-        }
-        return { mark: m.getAttribute('name'), text: text.trim() }
-    }).filter(c => c.text)
+    return chunks
+        .map(c => ({ mark: c.mark, text: c.text.trim() }))
+        .filter(c => c.text)
 }
 
 // ---------------------------------------------------------------- commands
 
 window.__reader = {
-    async open(url) {
+    // `initialLocation` is applied as part of opening: view.open() only parses,
+    // view.init() is what actually renders, and it takes the start position. So
+    // resuming at a calibre position is one call, not open-then-seek (which
+    // would render page 1 first and visibly jump).
+    async open(url, initialLocation, isCalibre) {
         try {
             await view.open(url)
+            const last = initialLocation
+                ? (isCalibre ? CFI.fromCalibrePos(initialLocation) : initialLocation)
+                : null
+            await view.init(last ? { lastLocation: last } : { showTextStart: true })
             const book = view.book
             post({
                 type: 'opened',
@@ -96,6 +112,9 @@ window.__reader = {
                     return Array.isArray(a) ? a.map(x => x?.name ?? x).join(', ') : (a?.name ?? a ?? null)
                 })(),
                 sectionCount: book?.sections?.length ?? 0,
+                diag: `vw=${window.innerWidth}x${window.innerHeight} ` +
+                      `renderer=${!!view.renderer} ` +
+                      `contents=${view.renderer?.getContents?.()?.length ?? -1}`,
             })
         } catch (e) { fail('open', e) }
     },

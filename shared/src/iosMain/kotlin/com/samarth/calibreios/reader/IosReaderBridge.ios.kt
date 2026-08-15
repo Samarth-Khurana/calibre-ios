@@ -39,7 +39,10 @@ class IosReaderBridge(assets: Map<String, ByteArray>) {
         classDiscriminator = "type"
     }
 
-    private val _events = MutableSharedFlow<ReaderEvent>(extraBufferCapacity = 64)
+    // replay matters: the engine emits "ready" as soon as bridge.js loads,
+    // which can precede the collector attaching. A replay=0 SharedFlow would
+    // drop it and the reader would sit blank forever.
+    private val _events = MutableSharedFlow<ReaderEvent>(replay = 32, extraBufferCapacity = 64)
 
     /** Everything the engine reports. The only channel results come back on. */
     val events: SharedFlow<ReaderEvent> = _events
@@ -69,9 +72,6 @@ class IosReaderBridge(assets: Map<String, ByteArray>) {
     val webView: WKWebView = run {
         val controller = WKUserContentController()
         controller.addScriptMessageHandler(messageHandler, name = MESSAGE_NAME)
-        // The JS side posts objects; stringify at the boundary so Kotlin gets
-        // one well-defined wire format instead of an NSDictionary to walk.
-        controller.addUserScript(stringifyShim())
 
         val config = WKWebViewConfiguration().apply {
             userContentController = controller
@@ -92,7 +92,11 @@ class IosReaderBridge(assets: Map<String, ByteArray>) {
 
     /** Fire a command. Results arrive on [events], never as a return value. */
     fun send(command: ReaderCommand) {
-        webView.evaluateJavaScript(command.toJs()) { _, error ->
+        // `void (...)` matters: most commands are async and therefore evaluate to
+        // a Promise, which WKWebView cannot marshal back to native ("result of an
+        // unsupported type"). The reply is the event stream, so the return value
+        // is deliberately thrown away.
+        webView.evaluateJavaScript("void (${command.toJs()});") { _, error ->
             if (error != null) {
                 _events.tryEmit(
                     ReaderEvent.Error("evaluateJavaScript", error.localizedDescription)
@@ -111,27 +115,3 @@ class IosReaderBridge(assets: Map<String, ByteArray>) {
 }
 
 private const val MESSAGE_NAME = "reader"
-
-/**
- * Wraps the native postMessage so the page always sends a JSON string.
- *
- * Without this, WKWebView hands Kotlin an NSDictionary/NSArray tree that would
- * need hand-walking; with it, the wire format is exactly the one
- * kotlinx-serialization already understands.
- */
-private fun stringifyShim(): platform.WebKit.WKUserScript =
-    platform.WebKit.WKUserScript(
-        source = """
-            (function () {
-              var native = window.webkit.messageHandlers.reader;
-              var post = native.postMessage.bind(native);
-              window.webkit.messageHandlers.reader = {
-                postMessage: function (o) {
-                  post(typeof o === 'string' ? o : JSON.stringify(o));
-                }
-              };
-            })();
-        """.trimIndent(),
-        injectionTime = platform.WebKit.WKUserScriptInjectionTime.WKUserScriptInjectionTimeAtDocumentStart,
-        forMainFrameOnly = true,
-    )
