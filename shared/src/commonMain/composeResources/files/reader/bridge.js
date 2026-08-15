@@ -316,6 +316,14 @@ window.__reader = {
             const t = typeof theme === 'string' ? JSON.parse(theme) : theme
             document.body.style.setProperty('--reader-bg', t.bg)
             if (t.highlight) highlightColor = t.highlight
+
+            // The overlay SVG is a sibling of the iframe in the OUTER document,
+            // not inside it, so renderer.setStyles cannot reach it. These are
+            // custom properties, which inherit through the shadow boundary, so
+            // setting them on the root element does.
+            const root = document.documentElement.style
+            root.setProperty('--overlayer-highlight-opacity', String(t.highlightOpacity ?? 1))
+            root.setProperty('--overlayer-highlight-blend-mode', t.highlightBlend || 'normal')
             view.renderer.setStyles(`
                 @namespace epub "http://www.idpf.org/2007/ops";
 

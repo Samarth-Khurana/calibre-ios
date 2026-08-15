@@ -416,11 +416,25 @@ data class ReaderTheme(
      */
     val link: String = "#0645ad",
     /**
-     * Fill painted behind the chunk being read aloud. Must stay legible over
-     * [bg] while leaving [fg] readable through it, so it is per-theme rather
-     * than one fixed colour.
+     * Fill painted behind the chunk being read aloud.
+     *
+     * Opaque, because [highlightBlend] does the work of keeping the text
+     * readable. foliate multiplies this by `--overlayer-highlight-opacity`
+     * (default .3) as well, so a translucent colour here is attenuated twice
+     * and renders far weaker than it looks.
      */
-    val highlight: String = "rgba(255, 214, 0, .45)",
+    val highlight: String = "#ffd21f",
+    /**
+     * How the highlight composites with the text beneath it.
+     *
+     * `multiply` on light backgrounds: white becomes gold, black text stays
+     * black — the real highlighter-pen effect, and the only way to be both
+     * loud and legible. `screen` on dark backgrounds, where multiply would
+     * darken the light text into the wash instead.
+     */
+    val highlightBlend: String = "multiply",
+    /** Overrides foliate's .3 default; the blend mode preserves legibility. */
+    val highlightOpacity: Double = 1.0,
     val dark: Boolean = false,
     val marginPx: Int? = null,
 ) {
@@ -435,6 +449,8 @@ data class ReaderTheme(
         append("\"bg\":").append(bg.jsonString()).append(',')
         append("\"link\":").append(link.jsonString()).append(',')
         append("\"highlight\":").append(highlight.jsonString()).append(',')
+        append("\"highlightBlend\":").append(highlightBlend.jsonString()).append(',')
+        append("\"highlightOpacity\":").append(highlightOpacity).append(',')
         append("\"dark\":").append(dark)
         marginPx?.let { append(",\"marginPx\":").append(it) }
         append('}')
@@ -444,13 +460,20 @@ data class ReaderTheme(
         val Light = ReaderTheme()
         val Sepia = ReaderTheme(
             fg = "#3b2f1e", bg = "#f6ecd9", link = "#7a4b2a",
-            highlight = "rgba(196, 128, 26, .40)",
+            // Cream is already warm, so a plain yellow barely registers on it.
+            // A saturated marigold multiplies down to a distinctly deeper,
+            // more saturated band while staying inside the sepia palette.
+            highlight = "#f0b429",
+            highlightBlend = "multiply",
         )
         val Dark = ReaderTheme(
             fg = "#d8d8d8", bg = "#121212", link = "#8ab4f8",
-            // Light-on-dark needs a cool, dimmer wash; the light theme's yellow
-            // glares and swamps the text.
-            highlight = "rgba(94, 129, 172, .55)",
+            // Golden here too, but achieved by screening a DARK gold: on
+            // near-black that lifts the background to a solid gold band while
+            // pushing the light text towards white. A bright gold would swamp
+            // the text; multiply would darken it into the wash.
+            highlight = "#6b5200",
+            highlightBlend = "screen",
             dark = true,
         )
     }
