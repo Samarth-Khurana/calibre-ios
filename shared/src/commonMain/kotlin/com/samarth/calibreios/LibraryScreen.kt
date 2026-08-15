@@ -29,7 +29,6 @@ import com.samarth.calibreios.calibre.CalibreBook
 import com.samarth.calibreios.calibre.CalibreClient
 import com.samarth.calibreios.calibre.CalibreServer
 import com.samarth.calibreios.calibre.Library
-import com.samarth.calibreios.calibre.rawProbe
 import com.samarth.calibreios.discovery.ServerDiscovery
 import kotlinx.coroutines.launch
 
@@ -69,7 +68,6 @@ fun LibraryScreen(
     // request is sent, and the previous error just stays on screen looking like
     // a fresh failure. There has to be a way to retry.
     var attempt by remember { mutableIntStateOf(0) }
-    var probe by remember { mutableStateOf("") }
 
     // Keyed on `attempt`, not just `server`. NSURLSession evaluates the network
     // path when it is created and caches the verdict; a session built before the
@@ -96,12 +94,8 @@ fun LibraryScreen(
 
     LaunchedEffect(client, attempt) {
         val c = client ?: return@LaunchedEffect
-        val s = server
         busy = true
         library.clearServerState()
-        // Control experiment: the same URL through the platform's own stack.
-        // If this succeeds while Ktor fails, the problem is ours, not iOS's.
-        if (s != null) rawProbe("${s.baseUrl}/ajax/search?num=1") { probe = it }
         library.refresh(c)
         busy = false
     }
@@ -182,7 +176,6 @@ fun LibraryScreen(
         }
         Text(stateLine, fontSize = 11.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
         if (note.isNotEmpty()) Text(note, fontSize = 11.sp, maxLines = 2)
-        if (probe.isNotEmpty()) Text(probe, fontSize = 10.sp, maxLines = 4)
 
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
 

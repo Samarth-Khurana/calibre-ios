@@ -232,16 +232,29 @@ Ordered by how likely they are to bite.
 
 | # | Risk | Mitigation |
 |---|---|---|
-| 1 | **iOS Local Network permission.** Denial is silent, cannot be re-prompted, and may reset on sideload provisioning churn. Untestable until a real app exists — Safari is exempt from the gate, so #6's probe proves nothing about it. | Detect the failure explicitly and explain it. Assume it *will* happen at least once. |
-| 2 | **`<mac>.local` vs hardcoded IP.** #6 tested only the IP form. An IP does not survive DHCP reassignment; `.local` needs mDNS, and #5 and #6 contradict each other on whether calibre's Bonjour advertisement is on by default. | Support both; prefer `.local` with an IP fallback. |
+| 1 | **iOS Local Network permission.** ~~Untestable until a real app exists.~~ **Now measured on an iPhone 17 Pro / iOS 26 (#14) and worse than described** — see below. | **Browse Bonjour at startup, before any HTTP.** Detecting and explaining the failure is not enough. |
+| 2 | ~~**`<mac>.local` vs hardcoded IP.**~~ **Resolved differently than planned (#14).** calibre registers its Bonjour service under a MAC-derived hostname (`Unknown_42:18:70:03:f8:4d.local`) whose colons cannot be parsed as a URL host, so there is no usable `.local` name to prefer. | **Re-discover via Bonjour every launch; never trust a stored address.** A stale IP stops being a failure mode when nothing stores one. |
 | 3 | **The foliate patch** must be re-applied on every upstream update, or delimiters silently revert to sentence segmentation. | Marked in-file; pin the version; treat as vendored. |
 | 4 | **`/ajax/*` is undocumented** and could change in any calibre release. | Stable for years. OPDS is the conservative fallback and reaches the same books. |
 | 5 | **Free-account provisioning expires every 7 days.** | Known cost of sideloading; a paid account makes it a year. |
 | 6 | **Style-exception curation** will be wrong on some book. | Accepted (§5.2). |
 
-### Verified on an iPhone 17 Pro (#9)
+### Corrections from device testing (#14)
 
-Read-aloud end-to-end with an enhanced voice; delimiter, hold and voice settings; pagination; theming.
+Three assumptions in this spec were wrong, and all three surfaced only on hardware.
+
+1. **HTTP alone never raises the permission prompt.** A request to a LAN address is refused *silently* and does not register the app as having asked — so it never appears in Settings › Privacy › Local Network and the user has nothing to switch on. There is no recovery from inside the app. **A Bonjour browse is what raises the prompt**, which promotes discovery from a convenience to a hard prerequisite for any network access.
+2. **The denial IS distinguishable from an unreachable server.** This spec claimed it was not. iOS reports `-1009 "The Internet connection appears to be offline"` with Wi-Fi up, but the underlying error carries `_NSURLErrorNWPathKey = unsatisfied (Local network prohibited)`, which nothing else produces. The two cases now get two different messages, because they have two different fixes.
+3. **Granting the permission may not take effect until it is toggled off and on again.** Observed: listed and ON in Settings, Bonjour resolution working, Safari reaching the server from the same device — and both Ktor *and* a plain `NSURLSession` still refused. Toggling the switch off and back on cleared it. **Onboarding must tell the user this**; it is not discoverable and looks exactly like a broken app.
+
+Two implementation notes that cost real time:
+
+- **`NSURLSession` caches its network-path verdict at construction.** A session built before the permission was granted stays "unsatisfied" for its entire life, so a retry that reuses it can never succeed. Build a fresh client per attempt.
+- **"State changed" is not "the user asked again."** Keying a request off the server value made re-selecting the same server a no-op that left the previous error on screen, indistinguishable from a fresh failure.
+
+### Verified on an iPhone 17 Pro (#9, #14)
+
+Read-aloud end-to-end with an enhanced voice; delimiter, hold and voice settings; pagination; theming. **Plus the whole of must-have 3 (#14):** Bonjour discovery of the server, `/ajax` browse, a 7.2 MB download over Wi-Fi, and the book opening at the Mac desktop viewer's position — `epubcfi(/26/2/4/18/1:127)` → `epubcfi(/6/26!/4/18/1:127)`, "3. Apples in the Basket".
 
 ### Verified on the simulator only
 
@@ -249,7 +262,6 @@ Highlight painting (the fix landed after the device session), custom delimiters 
 
 ### Not verified anywhere
 
-- **Calibre CFI resume on device** — the fixture book has no calibre position. Needs a real book pulled from the content server. This is the last unexercised link in must-have 3 and should be the **first thing an implementer proves.**
 - **Background audio and lock-screen controls** — the audio session is configured `playback`/`spokenAudio`, but nothing tests speech surviving a screen lock. `MPNowPlayingInfoCenter` and remote command handlers are untouched.
 
 ---
