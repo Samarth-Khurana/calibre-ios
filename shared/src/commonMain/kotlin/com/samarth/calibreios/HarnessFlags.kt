@@ -40,3 +40,6 @@ internal expect fun harnessScreen(): String?
 
 /** Harness-only: run this search once the book opens, and log the result. */
 internal expect fun harnessSearch(): String?
+
+/** Harness-only: bookmark the page on open, and log the resulting mark list. */
+internal expect fun harnessMark(): Boolean

@@ -145,6 +145,78 @@ const ssmlToChunks = ssml => {
         .filter(c => c.text)
 }
 
+// ---------------------------------------------------------------- marks
+//
+// Saved marks are drawn as UNDERLINES, deliberately. The read-aloud highlight
+// is a full wash, and two washes stack into a muddy third colour where they
+// overlap. Different shapes stay legible together and remain distinguishable
+// even in the same colour.
+
+const MARK_PREFIX = 'mark:'
+
+const paintMark = (id, cfi, color) => {
+    try {
+        view.addAnnotation({ value: cfi, color: color || '#f2c744', id })
+    } catch (e) { fail('paintMark', e) }
+}
+
+view.addEventListener('draw-annotation', ({ detail }) => {
+    const { draw, annotation } = detail
+    draw(Overlayer.underline, { color: annotation.color || '#f2c744' })
+})
+
+/**
+ * calibre's own annotations, out of the EPUB we already downloaded.
+ *
+ * `save_annots_to_epub` writes them to META-INF/calibre_bookmarks.txt -- the
+ * same file the reading position comes from -- so this costs one extra parse
+ * and no extra requests.
+ */
+const calibreMarks = async () => {
+    const out = []
+    try {
+        const all = await view.book?.getCalibreBookmarks?.()
+        for (const entry of all ?? []) {
+            if (entry?.type === 'highlight') {
+                // foliate ships fromCalibreHighlight for exactly this shape --
+                // it handles the spine indirection and builds the range form.
+                // Hand-rolling it produced CFIs that did not resolve.
+                if (entry.spine_index == null || !entry.start_cfi) continue
+                let cfi
+                try {
+                    cfi = CFI.fromCalibreHighlight({
+                        spine_index: entry.spine_index,
+                        start_cfi: entry.start_cfi,
+                        end_cfi: entry.end_cfi ?? entry.start_cfi,
+                    })
+                } catch (e) { continue }
+                out.push({
+                    id: entry.uuid ?? cfi,
+                    kind: 'highlight',
+                    cfi,
+                    text: entry.highlighted_text ?? '',
+                    note: entry.notes ?? '',
+                    color: entry.style?.which ?? null,
+                    label: (entry.toc_family_titles ?? [])[0] ?? '',
+                    fromCalibre: true,
+                })
+            } else if (entry?.type === 'bookmark' && entry.pos_type === 'epubcfi') {
+                out.push({
+                    id: `bm:${entry.title ?? ''}:${entry.pos}`,
+                    kind: 'bookmark',
+                    cfi: CFI.fromCalibrePos(entry.pos),
+                    text: '',
+                    note: '',
+                    color: null,
+                    label: entry.title ?? '',
+                    fromCalibre: true,
+                })
+            }
+        }
+    } catch (e) { /* no annotations in this book */ }
+    return out
+}
+
 // ---------------------------------------------------------------- commands
 
 window.__reader = {
@@ -429,6 +501,50 @@ window.__reader = {
 
     clearSearch() {
         try { view.clearSearch() } catch (e) { /* nothing to clear */ }
+    },
+
+    /** Report calibre's own bookmarks and highlights, read from the EPUB. */
+    async calibreMarks() {
+        try {
+            post({ type: 'calibreMarks', marks: await calibreMarks() })
+        } catch (e) { fail('calibreMarks', e) }
+    },
+
+    /** Turn the current selection into a highlight, and report its CFI. */
+    makeHighlight(id, color) {
+        try {
+            const range = currentSelectionRange()
+            if (!range) return fail('makeHighlight', 'nothing selected')
+            const cfi = view.getCFI(view.renderer.getContents()[0].index, range)
+            const text = range.toString().trim().slice(0, 300)
+            paintMark(id, cfi, color)
+            this.clearSelection()
+            post({ type: 'markCreated', id, kind: 'highlight', cfi, text })
+        } catch (e) { fail('makeHighlight', e) }
+    },
+
+    /** Bookmark the current page: no selection needed, just where we are. */
+    makeBookmark(id) {
+        try {
+            const cfi = view.lastLocation?.cfi
+            if (!cfi) return fail('makeBookmark', 'no position yet')
+            const label = view.lastLocation?.tocItem?.label ?? ''
+            post({ type: 'markCreated', id, kind: 'bookmark', cfi, text: label })
+        } catch (e) { fail('makeBookmark', e) }
+    },
+
+    /** Paint a set of saved highlights, e.g. on open or after a section change. */
+    showMarks(json) {
+        try {
+            const marks = typeof json === 'string' ? JSON.parse(json) : json
+            for (const m of marks ?? []) {
+                if (m.kind === 'highlight' && m.cfi) paintMark(m.id, m.cfi, m.color)
+            }
+        } catch (e) { fail('showMarks', e) }
+    },
+
+    hideMark(cfi) {
+        try { view.deleteAnnotation({ value: cfi }) } catch (e) { /* not painted */ }
     },
 
     async goToHref(href) {

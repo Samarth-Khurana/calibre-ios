@@ -27,3 +27,7 @@ internal actual fun harnessScreen(): String? =
 @OptIn(ExperimentalForeignApi::class)
 internal actual fun harnessSearch(): String? =
     getenv("CALIBRE_SEARCH")?.toKString()?.takeIf { it.isNotEmpty() }
+
+@OptIn(ExperimentalForeignApi::class)
+internal actual fun harnessMark(): Boolean =
+    getenv("CALIBRE_MARK")?.toKString().isNullOrEmpty().not()

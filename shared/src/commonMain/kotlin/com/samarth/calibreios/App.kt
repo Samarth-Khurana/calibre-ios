@@ -38,7 +38,10 @@ import com.samarth.calibreios.reader.ReaderTheme
 import com.samarth.calibreios.reader.ReaderView
 import com.samarth.calibreios.reader.PositionStore
 import com.samarth.calibreios.reader.ReadingPosition
+import com.samarth.calibreios.reader.Mark
+import com.samarth.calibreios.reader.MarkStore
 import com.samarth.calibreios.reader.SearchHit
+import com.samarth.calibreios.reader.mergeMarks
 import com.samarth.calibreios.reader.TocEntry
 import com.samarth.calibreios.reader.shouldOfferMacPosition
 import com.samarth.calibreios.settings.SettingsStore
@@ -59,6 +62,7 @@ fun App() {
     val library = remember { Library(storage) }
     val settingsStore = remember { SettingsStore(storage) }
     val positions = remember { PositionStore(storage) }
+    val marks = remember { MarkStore(storage) }
     val settings by settingsStore.settings.collectAsState()
     val speaker = remember { createSpeaker() }
 
@@ -118,6 +122,7 @@ fun App() {
                 else -> ReaderScreen(
                     book = book,
                     positions = positions,
+                    marks = marks,
                     readerTheme = readerTheme,
                     ttsSettings = settings.readAloud.toSessionSettings(),
                     speaker = speaker,
@@ -153,6 +158,7 @@ data class OpenBook(
 private fun ReaderScreen(
     book: OpenBook,
     positions: PositionStore,
+    marks: MarkStore,
     readerTheme: ReaderTheme,
     ttsSettings: TtsSession.Settings,
     speaker: Speaker,
@@ -174,7 +180,14 @@ private fun ReaderScreen(
     var searchQuery by remember { mutableStateOf("") }
     var searchHits by remember { mutableStateOf<ReaderEvent.SearchResults?>(null) }
     var searching by remember { mutableStateOf(false) }
+
+    var ownMarks by remember(book) {
+        mutableStateOf(marks.own(book.libraryId, book.bookId))
+    }
+    var calibreMarks by remember(book) { mutableStateOf<List<Mark>>(emptyList()) }
+    val allMarks = remember(ownMarks, calibreMarks) { mergeMarks(ownMarks, calibreMarks) }
     var macOffer by remember { mutableStateOf<String?>(null) }
+    var lastToc by remember { mutableStateOf("") }
 
     // Read once: the phone's own position is what the book opens at, and a
     // differing Mac position is offered rather than applied (#8).
@@ -220,11 +233,21 @@ private fun ReaderScreen(
     }
 
     if (showToc) {
-        TocSheet(
+        ContentsSheet(
             entries = toc,
-            onPick = { entry ->
+            marks = allMarks,
+            onPickEntry = { entry ->
                 entry.href?.let { controller?.send(ReaderCommand.GoToHref(it)) }
                 showToc = false
+            },
+            onPickMark = { mark ->
+                controller?.send(ReaderCommand.GoTo(mark.cfi))
+                showToc = false
+            },
+            onRemoveMark = { mark ->
+                marks.remove(book.libraryId, book.bookId, mark.id)
+                ownMarks = marks.own(book.libraryId, book.bookId)
+                controller?.send(ReaderCommand.HideMark(mark.cfi))
             },
             onDismiss = { showToc = false },
         )
@@ -274,6 +297,11 @@ private fun ReaderScreen(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
             )
+            // The bookmark ribbon lives up here, where readers expect it, and
+            // because the bottom row has now overflowed twice at five controls.
+            TextButton(onClick = {
+                controller?.send(ReaderCommand.MakeBookmark(id = "b${nowMillis()}"))
+            }) { Text("⚑", fontSize = 15.sp) }
             TextButton(onClick = onSettings) { Text("Settings", fontSize = 13.sp) }
         }
 
@@ -317,6 +345,14 @@ private fun ReaderScreen(
                             macOffer = event.calibreCfi
                         }
                         controller?.send(ReaderCommand.RequestToc)
+                        controller?.send(ReaderCommand.RequestCalibreMarks)
+                        // Paint what is already saved for this book.
+                        if (ownMarks.isNotEmpty()) {
+                            controller?.send(ReaderCommand.ShowMarks(marksJson(ownMarks)))
+                        }
+                        if (harnessMark()) {
+                            controller?.send(ReaderCommand.MakeBookmark(id = "b-harness"))
+                        }
                         harnessSearch()?.let { term ->
                             searchQuery = term
                             searching = true
@@ -325,6 +361,35 @@ private fun ReaderScreen(
                     }
 
                     is ReaderEvent.Toc -> toc = event.entries
+
+                    is ReaderEvent.CalibreMarks -> {
+                        calibreMarks = event.marks
+                        println("[calibre] calibre marks: ${event.marks.size}")
+                        val highlights = event.marks.filter { it.kind == Mark.Kind.Highlight }
+                        if (highlights.isNotEmpty()) {
+                            controller?.send(ReaderCommand.ShowMarks(marksJson(highlights)))
+                        }
+                    }
+
+                    is ReaderEvent.MarkCreated -> {
+                        // The engine owns CFIs, so a mark is only real once it
+                        // reports back with one.
+                        val mark = Mark(
+                            id = event.id,
+                            kind = if (event.kind == "bookmark") Mark.Kind.Bookmark
+                            else Mark.Kind.Highlight,
+                            cfi = event.cfi,
+                            text = event.text,
+                            label = lastToc,
+                            createdAt = nowMillis(),
+                        )
+                        marks.add(book.libraryId, book.bookId, mark)
+                        ownMarks = marks.own(book.libraryId, book.bookId)
+                        println(
+                            "[calibre] mark created: ${mark.kind} cfi=${mark.cfi.take(40)} " +
+                                "text='${mark.text.take(40)}' own=${ownMarks.size}"
+                        )
+                    }
 
                     is ReaderEvent.SearchResults -> {
                         searching = false
@@ -343,6 +408,7 @@ private fun ReaderScreen(
                             autoplayed = true
                             session?.start()
                         }
+                        lastToc = event.tocLabel ?: lastToc
                         location = "${event.fraction?.let { (it * 100).toInt() } ?: "-"}% " +
                             (event.tocLabel ?: "")
 
@@ -363,7 +429,10 @@ private fun ReaderScreen(
                         }
                     }
 
-                    is ReaderEvent.Error -> status = "error: ${event.message}"
+                    is ReaderEvent.Error -> {
+                        println("[calibre] reader error @${event.where}: ${event.message}")
+                        status = "error: ${event.message}"
+                    }
 
                     else -> Unit
                 }
@@ -395,6 +464,12 @@ private fun ReaderScreen(
                         selection = ""
                         session?.start()
                     }) { Text("Read from here", fontSize = 12.sp) }
+                    TextButton(onClick = {
+                        controller?.send(
+                            ReaderCommand.MakeHighlight(id = "h${nowMillis()}")
+                        )
+                        selection = ""
+                    }) { Text("Highlight", fontSize = 12.sp) }
                 }
             }
 
@@ -417,6 +492,9 @@ private fun ReaderScreen(
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                // Four, not five. Five overflowed here once already; page
+                // turning also works by tapping the page edges, so the arrows
+                // are the pair that can afford to be compact.
                 OutlinedButton(onClick = { controller?.send(ReaderCommand.PrevPage) }) { Text("◀") }
                 OutlinedButton(
                     enabled = toc.isNotEmpty(),
@@ -448,35 +526,116 @@ private fun ReaderScreen(
     }
 }
 
-/** The table of contents. Flattened, with depth shown as indentation. */
+/**
+ * Contents and Marks in one sheet.
+ *
+ * Both answer "where in this book do I want to be", so they belong together --
+ * and it keeps the reader's bottom row from overflowing, which it already did
+ * once at five controls.
+ */
 @Composable
-private fun TocSheet(
+private fun ContentsSheet(
     entries: List<TocEntry>,
-    onPick: (TocEntry) -> Unit,
+    marks: List<Mark>,
+    onPickEntry: (TocEntry) -> Unit,
+    onPickMark: (Mark) -> Unit,
+    onRemoveMark: (Mark) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    var tab by remember { mutableIntStateOf(0) }
+
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Contents") },
+        title = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = { tab = 0 }) {
+                    Text("Contents", fontSize = 14.sp,
+                        color = if (tab == 0) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                TextButton(onClick = { tab = 1 }) {
+                    Text("Marks (${marks.size})", fontSize = 14.sp,
+                        color = if (tab == 1) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        },
         text = {
             LazyColumn(Modifier.heightIn(max = 420.dp)) {
-                items(entries.size) { i ->
-                    val entry = entries[i]
-                    Text(
-                        entry.label,
-                        fontSize = 13.sp,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onPick(entry) }
-                            .padding(
-                                start = (entry.depth * 14).dp,
-                                top = 8.dp,
-                                bottom = 8.dp,
-                            ),
-                    )
-                    HorizontalDivider()
+                if (tab == 0) {
+                    items(entries.size) { i ->
+                        val entry = entries[i]
+                        Text(
+                            entry.label,
+                            fontSize = 13.sp,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onPickEntry(entry) }
+                                .padding(start = (entry.depth * 14).dp, top = 8.dp, bottom = 8.dp),
+                        )
+                        HorizontalDivider()
+                    }
+                } else if (marks.isEmpty()) {
+                    item {
+                        Text(
+                            "No marks yet. Select text to highlight it, or use " +
+                                "\u201cmark\u201d to bookmark this page.",
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(vertical = 12.dp),
+                        )
+                    }
+                } else {
+                    items(marks.size) { i ->
+                        val mark = marks[i]
+                        Row(
+                            Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(
+                                Modifier.weight(1f).clickable { onPickMark(mark) },
+                            ) {
+                                Text(
+                                    if (mark.kind == Mark.Kind.Highlight) "\u201c${mark.text}\u201d"
+                                    else mark.text.ifBlank { mark.label.ifBlank { "Bookmark" } },
+                                    fontSize = 12.sp,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                if (mark.note.isNotBlank()) {
+                                    Text(
+                                        mark.note,
+                                        fontSize = 11.sp,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                        color = MaterialTheme.colorScheme.primary,
+                                    )
+                                }
+                                Text(
+                                    listOfNotNull(
+                                        mark.label.takeIf { it.isNotBlank() },
+                                        // Say where it came from, because it is
+                                        // also why there is no Remove (#17).
+                                        "from calibre".takeIf { mark.fromCalibre },
+                                    ).joinToString(" \u00b7 "),
+                                    fontSize = 10.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            // Read-only: calibre marks live in the Mac's copy of
+                            // the book, so a delete here would be undone by the
+                            // next download.
+                            if (!mark.fromCalibre) {
+                                TextButton(onClick = { onRemoveMark(mark) }) {
+                                    Text("Remove", fontSize = 11.sp)
+                                }
+                            }
+                        }
+                        HorizontalDivider()
+                    }
                 }
             }
         },
@@ -548,3 +707,17 @@ private fun SearchSheet(
         confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
     )
 }
+
+/** Minimal JSON for the engine's `showMarks`; only the painting fields. */
+private fun marksJson(marks: List<Mark>): String =
+    marks.filter { it.kind == Mark.Kind.Highlight }.joinToString(
+        separator = ",",
+        prefix = "[",
+        postfix = "]",
+    ) { m ->
+        """{"id":"${m.id}","kind":"highlight","cfi":${quote(m.cfi)},""" +
+            """"color":${m.color?.let { quote(it) } ?: "null"}}"""
+    }
+
+private fun quote(value: String): String =
+    "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""

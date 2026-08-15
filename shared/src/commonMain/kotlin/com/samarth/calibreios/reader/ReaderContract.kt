@@ -155,6 +155,31 @@ sealed interface ReaderCommand {
         override fun toJs() = "window.__reader.clearSearch()"
     }
 
+    /** Ask for calibre's own bookmarks and highlights, read from the EPUB. */
+    data object RequestCalibreMarks : ReaderCommand {
+        override fun toJs() = "window.__reader.calibreMarks()"
+    }
+
+    /** Turn the current selection into a highlight; replies [ReaderEvent.MarkCreated]. */
+    data class MakeHighlight(val id: String, val color: String? = null) : ReaderCommand {
+        override fun toJs() =
+            "window.__reader.makeHighlight(${id.jsString()}, ${color?.jsString() ?: "null"})"
+    }
+
+    /** Bookmark the current page; replies [ReaderEvent.MarkCreated]. */
+    data class MakeBookmark(val id: String) : ReaderCommand {
+        override fun toJs() = "window.__reader.makeBookmark(${id.jsString()})"
+    }
+
+    /** Paint saved highlights. [json] is a list of `{id, kind, cfi, color}`. */
+    data class ShowMarks(val json: String) : ReaderCommand {
+        override fun toJs() = "window.__reader.showMarks(${json.jsString()})"
+    }
+
+    data class HideMark(val cfi: String) : ReaderCommand {
+        override fun toJs() = "window.__reader.hideMark(${cfi.jsString()})"
+    }
+
     /** Navigate to a TOC entry's href. */
     data class GoToHref(val href: String) : ReaderCommand {
         override fun toJs() = "window.__reader.goToHref(${href.jsString()})"
@@ -256,6 +281,21 @@ sealed interface ReaderEvent {
         val results: List<SearchHit> = emptyList(),
         /** True when the cap was hit — say so rather than imply completeness. */
         val truncated: Boolean = false,
+    ) : ReaderEvent
+
+    /** calibre's own marks, parsed out of the downloaded EPUB. */
+    @Serializable
+    @SerialName("calibreMarks")
+    data class CalibreMarks(val marks: List<Mark> = emptyList()) : ReaderEvent
+
+    /** A mark the engine just created, with the CFI only it could compute. */
+    @Serializable
+    @SerialName("markCreated")
+    data class MarkCreated(
+        val id: String = "",
+        val kind: String = "",
+        val cfi: String = "",
+        val text: String = "",
     ) : ReaderEvent
 
     @Serializable
