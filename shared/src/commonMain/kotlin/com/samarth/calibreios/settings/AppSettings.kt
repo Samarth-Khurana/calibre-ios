@@ -167,7 +167,14 @@ class SettingsStore(
         val next = transform(_settings.value)
         if (next == _settings.value) return
         _settings.value = next
-        runCatching { storage.writeText(FILE, json.encodeToString(next)) }
+        // Failures are reported, never swallowed. Settings silently failing to
+        // persist looks exactly like the app ignoring you, and a runCatching
+        // that drops the reason leaves nothing to diagnose from.
+        val encoded = runCatching { json.encodeToString(next) }
+            .onFailure { println("[calibre] settings encode failed: ${it.message}") }
+            .getOrNull() ?: return
+        runCatching { storage.writeText(FILE, encoded) }
+            .onFailure { println("[calibre] settings write failed: ${it.message}") }
     }
 
     private companion object {
