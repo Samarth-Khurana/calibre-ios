@@ -1,7 +1,18 @@
-TEAM_ID=92US8PNAR8
+// Signing team. Developer-specific, so it is NOT committed: set it in
+// iosApp/Configuration/Local.xcconfig, which is gitignored.
+//
+//     TEAM_ID=ABCDE12345
+//
+// Find yours with: security find-identity -v -p codesigning
+// (the 10-character code in parentheses). A free Apple ID works; its
+// provisioning expires every 7 days.
+TEAM_ID=
 
 PRODUCT_NAME=calibre-ios
 PRODUCT_BUNDLE_IDENTIFIER=com.samarth.calibreios.calibre-ios$(TEAM_ID)
 
 CURRENT_PROJECT_VERSION=1
 MARKETING_VERSION=1.0
+
+// Optional, and last so it overrides the empty default above.
+#include? "Local.xcconfig"
