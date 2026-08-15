@@ -4,5 +4,29 @@
 <dict>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
+
+	<!-- Spec risk #1. Without this key iOS refuses LAN connections outright;
+	     with it, the user is prompted once. Denial is silent and surfaces as
+	     an ordinary connection failure, which is why Library.describe() names
+	     it as a possible cause rather than blaming the network. -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Calibre Reader connects to the calibre content server on your Mac to list and download your books.</string>
+
+	<!-- Needed to resolve a &lt;mac&gt;.local address (spec risk #2). calibre
+	     advertises _calibre._tcp; _http._tcp covers the OPDS advertisement. -->
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_calibre._tcp</string>
+		<string>_http._tcp</string>
+	</array>
+
+	<!-- The content server is plain HTTP on a home LAN; there is no TLS to
+	     require. Scoped to local networking rather than allowing arbitrary
+	     cleartext to the internet. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 </dict>
 </plist>

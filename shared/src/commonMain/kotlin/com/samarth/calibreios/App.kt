@@ -31,7 +31,9 @@ import com.samarth.calibreios.reader.ReaderController
 import com.samarth.calibreios.reader.ReaderEvent
 import com.samarth.calibreios.reader.ReaderTheme
 import com.samarth.calibreios.reader.ReaderView
+import com.samarth.calibreios.calibre.Library
 import com.samarth.calibreios.reader.TtsDelimiter
+import com.samarth.calibreios.storage.Storage
 import com.samarth.calibreios.tts.SpeechSettings
 import com.samarth.calibreios.tts.TtsSession
 import com.samarth.calibreios.tts.VoiceInfo
@@ -59,18 +61,44 @@ fun App() {
     // mode -- see the note on `readerTheme` below.
     val systemDark = isSystemInDarkTheme()
 
+    val storage = remember { Storage() }
+    val library = remember { Library(storage) }
+
+    // null = library list; non-null = reading that file.
+    var openBook by remember { mutableStateOf<OpenBook?>(null) }
+
     MaterialTheme(colorScheme = if (systemDark) darkColorScheme() else lightColorScheme()) {
         // Surface is load-bearing, not decoration: without it nothing paints a
         // background, so the window shows through and the shell's text is drawn
         // in a colour chosen for the opposite background.
         Surface(Modifier.fillMaxSize()) {
-            HarnessContent(systemDark)
+            val book = openBook
+            if (book == null) {
+                Column(Modifier.fillMaxSize().safeContentPadding()) {
+                    LibraryScreen(library) { _, calibreBook, path ->
+                        openBook = OpenBook(calibreBook.title, path)
+                    }
+                }
+            } else {
+                HarnessContent(
+                    systemDark = systemDark,
+                    book = book,
+                    onBack = { openBook = null },
+                )
+            }
         }
     }
 }
 
+/** A book that has been downloaded and is ready to open. */
+data class OpenBook(val title: String, val path: String)
+
 @Composable
-private fun HarnessContent(systemDark: Boolean) {
+private fun HarnessContent(
+    systemDark: Boolean,
+    book: OpenBook?,
+    onBack: () -> Unit,
+) {
     var controller by remember { mutableStateOf<ReaderController?>(null) }
     var session by remember { mutableStateOf<TtsSession?>(null) }
     var status by remember { mutableStateOf("loading…") }
@@ -146,13 +174,13 @@ private fun HarnessContent(systemDark: Boolean) {
                 when (event) {
                     is ReaderEvent.Ready -> {
                         status = "bridge ready"
-                        // A real calibre book if one was supplied, so the
-                        // Mac -> iPhone resume path can be exercised against a
-                        // genuine position; otherwise the bundled fixture,
-                        // which has never been opened on a desktop.
-                        val real = testBookPath()
-                        if (real != null) {
-                            controller?.setBookPath(real)
+                        // A downloaded calibre book if we have one -- that is
+                        // the path that carries a real desktop position.
+                        // testBookPath() is the pre-download escape hatch, and
+                        // the bundled fixture is the last resort.
+                        val path = book?.path ?: testBookPath()
+                        if (path != null) {
+                            controller?.setBookPath(path)
                             controller?.send(
                                 ReaderCommand.Open(BOOK_URL, useCalibreBookmark = true)
                             )
@@ -259,7 +287,7 @@ private fun HarnessContent(systemDark: Boolean) {
                 OutlinedButton(onClick = { controller?.send(ReaderCommand.PrevPage) }) { Text("◀") }
                 OutlinedButton(onClick = { controller?.send(ReaderCommand.NextPage) }) { Text("▶") }
                 OutlinedButton(onClick = { themeOverride = null }) { Text("auto") }
-                OutlinedButton(onClick = { themeOverride = ReaderTheme.Sepia }) { Text("sepia") }
+                OutlinedButton(onClick = onBack) { Text("library") }
                 OutlinedButton(
                     onClick = {
                         themeOverride =

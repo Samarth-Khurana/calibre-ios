@@ -1,0 +1,177 @@
+package com.samarth.calibreios
+
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.Button
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.samarth.calibreios.calibre.CalibreBook
+import com.samarth.calibreios.calibre.CalibreClient
+import com.samarth.calibreios.calibre.CalibreServer
+import com.samarth.calibreios.calibre.Library
+import kotlinx.coroutines.launch
+
+/** Integer MB hid a 55 KB book as "0 MB". */
+private fun humanSize(bytes: Long): String = when {
+    bytes >= 1024L * 1024 -> "${(bytes * 10 / (1024 * 1024)) / 10.0} MB"
+    bytes >= 1024 -> "${bytes / 1024} KB"
+    else -> "$bytes B"
+}
+
+/**
+ * The calibre library, minimally.
+ *
+ * M1 deliberately stops here: a list is enough to prove the path from the Mac's
+ * library to a book open on the phone at the desktop viewer's position. The
+ * real browse experience is M2.
+ */
+@Composable
+fun LibraryScreen(
+    library: Library,
+    onOpen: (CalibreServer, CalibreBook, String) -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+
+    var server by remember { mutableStateOf(library.loadServer()) }
+    var host by remember { mutableStateOf(server?.host ?: "127.0.0.1") }
+    var port by remember { mutableStateOf((server?.port ?: 8080).toString()) }
+
+    val books by library.books.collectAsState()
+    val serverState by library.serverState.collectAsState()
+    val downloading by library.downloading.collectAsState()
+
+    var busy by remember { mutableStateOf(false) }
+    var note by remember { mutableStateOf("") }
+
+    val client = remember(server) { server?.let { CalibreClient(it) } }
+
+    // Cached catalogue first, so the list is populated before -- and without --
+    // the network. Reaching the server is enrichment, never a precondition.
+    LaunchedEffect(Unit) { library.loadCached() }
+
+    LaunchedEffect(client) {
+        val c = client ?: return@LaunchedEffect
+        busy = true
+        library.refresh(c)
+        busy = false
+    }
+
+    // Harness-only: simctl cannot tap, so let the download-and-open path be
+    // driven from the launch environment. Goes with the rest of the harness.
+    LaunchedEffect(books, client) {
+        val wanted = autoOpenBookId() ?: return@LaunchedEffect
+        val c = client ?: return@LaunchedEffect
+        val s = server ?: return@LaunchedEffect
+        val target = books.firstOrNull { it.id == wanted } ?: return@LaunchedEffect
+        note = "auto-opening #${target.id}…"
+        library.ensureDownloaded(c, s, target).fold(
+            onSuccess = { path -> onOpen(s, target, path) },
+            onFailure = { note = "Download failed: ${it.message}" },
+        )
+    }
+
+    Column(Modifier.fillMaxSize().padding(12.dp)) {
+
+        Text("Calibre library", style = MaterialTheme.typography.titleMedium)
+
+        Row(
+            Modifier.fillMaxWidth().padding(vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            OutlinedTextField(
+                value = host,
+                onValueChange = { host = it },
+                label = { Text("Host", fontSize = 11.sp) },
+                singleLine = true,
+                modifier = Modifier.weight(2f),
+            )
+            OutlinedTextField(
+                value = port,
+                onValueChange = { port = it.filter(Char::isDigit) },
+                label = { Text("Port", fontSize = 11.sp) },
+                singleLine = true,
+                modifier = Modifier.weight(1f),
+            )
+            Button(
+                enabled = host.isNotBlank() && !busy,
+                onClick = {
+                    val next = CalibreServer(host.trim(), port.toIntOrNull() ?: 8080)
+                    library.saveServer(next)
+                    server = next
+                },
+            ) { Text("Connect") }
+        }
+
+        val stateLine = when (val s = serverState) {
+            is Library.ServerState.Reachable -> "connected · ${books.size} books"
+            is Library.ServerState.Unreachable -> s.detail
+            Library.ServerState.Unknown -> if (busy) "connecting…" else "not connected"
+        }
+        Text(stateLine, fontSize = 11.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
+        if (note.isNotEmpty()) Text(note, fontSize = 11.sp, maxLines = 2)
+
+        HorizontalDivider(Modifier.padding(vertical = 8.dp))
+
+        LazyColumn(Modifier.fillMaxSize()) {
+            items(books, key = { it.id }) { book ->
+                val srv = server
+                val progress = downloading[book.id]
+                val downloaded = srv != null && library.isDownloaded(srv, book)
+
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable(enabled = srv != null && client != null && progress == null) {
+                            val s = srv ?: return@clickable
+                            val c = client ?: return@clickable
+                            scope.launch {
+                                note = ""
+                                library.ensureDownloaded(c, s, book).fold(
+                                    onSuccess = { path -> onOpen(s, book, path) },
+                                    onFailure = { note = "Download failed: ${it.message}" },
+                                )
+                            }
+                        }
+                        .padding(vertical = 10.dp),
+                ) {
+                    Text(book.title, fontSize = 14.sp, maxLines = 2,
+                        overflow = TextOverflow.Ellipsis)
+                    Text(
+                        buildString {
+                            append(book.authorLine)
+                            if (book.sizeBytes > 0) append(" · ${humanSize(book.sizeBytes)}")
+                            append(if (downloaded) " · on device" else " · tap to download")
+                        },
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (progress != null) {
+                        LinearProgressIndicator(
+                            progress = { progress },
+                            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                        )
+                    }
+                }
+                HorizontalDivider()
+            }
+        }
+    }
+}

@@ -24,3 +24,10 @@ internal expect fun autoplayDelimiter(): String?
  * before the download path exists. Set with `SIMCTL_CHILD_CALIBRE_BOOK=/path`.
  */
 internal expect fun testBookPath(): String?
+
+/**
+ * Harness-only: calibre book id to download and open automatically on launch,
+ * so the download path is exercisable without a tap.
+ * Set with `SIMCTL_CHILD_CALIBRE_OPEN_ID=2`.
+ */
+internal expect fun autoOpenBookId(): Int?
