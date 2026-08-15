@@ -44,6 +44,14 @@ actual class Storage actual constructor() {
     actual fun bookFile(libraryId: String, bookId: Int): String =
         "${booksDir()}/${libraryId}_$bookId.epub"
 
+    actual fun bookFiles(): List<String> {
+        val dir = booksDir()
+        val names = fm.contentsOfDirectoryAtPath(dir, null) ?: return emptyList()
+        return names.filterIsInstance<String>()
+            .filter { it.endsWith(".epub", ignoreCase = true) }
+            .map { "$dir/$it" }
+    }
+
     actual fun exists(path: String): Boolean = fm.fileExistsAtPath(path)
 
     actual fun sizeOf(path: String): Long =

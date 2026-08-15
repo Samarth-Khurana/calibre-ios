@@ -15,6 +15,8 @@ actual class Storage actual constructor() {
         unsupported()
     }
 
+    actual fun bookFiles(): List<String> = emptyList()
+
     actual fun exists(path: String): Boolean = false
 
     actual fun sizeOf(path: String): Long = 0

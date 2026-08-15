@@ -15,6 +15,9 @@ expect class Storage() {
     /** Absolute path a given book's EPUB occupies, downloaded or not. */
     fun bookFile(libraryId: String, bookId: Int): String
 
+    /** Absolute paths of every downloaded book file. */
+    fun bookFiles(): List<String>
+
     fun exists(path: String): Boolean
     fun sizeOf(path: String): Long
     fun delete(path: String)

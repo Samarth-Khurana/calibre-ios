@@ -1,8 +1,14 @@
 package com.samarth.calibreios.calibre
 
 import com.samarth.calibreios.storage.Storage
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 
 /**
@@ -12,9 +18,14 @@ import kotlinx.serialization.json.Json
  * Offline-first (#8) — the catalogue is cached to disk, so the app opens and
  * shows books with the Mac asleep, which is the common case rather than an
  * edge case. Reaching the server is an *enrichment*, never a precondition.
+ *
+ * Storage is bounded manually (#15): nothing is evicted automatically, so a
+ * book cannot vanish before a flight. Removing one deletes only the file — its
+ * reading position is kept, so re-downloading returns you to where you were.
  */
 class Library(
     private val storage: Storage,
+    private val scope: CoroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob()),
     private val json: Json = Json { ignoreUnknownKeys = true; prettyPrint = true },
 ) {
 
@@ -25,15 +36,32 @@ class Library(
         data class Unreachable(val detail: String) : ServerState
     }
 
+    /** Where a book is in the download queue. Absent means "not queued". */
+    sealed interface Download {
+        data object Queued : Download
+        data class Running(val fraction: Float) : Download
+        /** The partial file is kept, so retrying resumes rather than restarts. */
+        data class Failed(val reason: String) : Download
+    }
+
     private val _books = MutableStateFlow<List<CalibreBook>>(emptyList())
     val books: StateFlow<List<CalibreBook>> = _books
 
     private val _server = MutableStateFlow<ServerState>(ServerState.Unknown)
     val serverState: StateFlow<ServerState> = _server
 
-    private val _downloading = MutableStateFlow<Map<Int, Float>>(emptyMap())
-    /** Book id → 0..1 progress, for books currently transferring. */
-    val downloading: StateFlow<Map<Int, Float>> = _downloading
+    private val _downloads = MutableStateFlow<Map<Int, Download>>(emptyMap())
+    val downloads: StateFlow<Map<Int, Download>> = _downloads
+
+    private val _bytesOnDisk = MutableStateFlow(0L)
+    val bytesOnDisk: StateFlow<Long> = _bytesOnDisk
+
+    /** True while more results are known to exist beyond what is loaded. */
+    private val _hasMore = MutableStateFlow(false)
+    val hasMore: StateFlow<Boolean> = _hasMore
+
+    private var query: String? = null
+    private var loaded = 0
 
     // ------------------------------------------------------------- config
 
@@ -58,28 +86,54 @@ class Library(
         val cached = storage.readText(CATALOGUE_FILE)
             ?.let { runCatching { json.decodeFromString<List<CalibreBook>>(it) }.getOrNull() }
         if (cached != null) _books.value = cached
+        refreshDiskUsage()
     }
 
     /**
-     * Refresh from the server, keeping the cached list if it cannot be reached.
+     * Load the first page for [search], replacing what is shown.
      *
      * Returns false when the server was unreachable — the caller shows that as
-     * a state, not a failure.
+     * a state, not a failure. On failure the previous list is left alone rather
+     * than blanked: stale results beat an empty screen.
      */
-    suspend fun refresh(client: CalibreClient): Boolean {
-        val result = client.listBooks(limit = 500)
-        return result.fold(
-            onSuccess = { books ->
-                _books.value = books
-                storage.writeText(CATALOGUE_FILE, json.encodeToString(books))
-                _server.value = ServerState.Reachable
-                true
-            },
-            onFailure = { error ->
+    suspend fun refresh(client: CalibreClient, search: String? = null): Boolean {
+        query = search?.takeIf { it.isNotBlank() }
+        loaded = 0
+        return fetchPage(client, replace = true)
+    }
+
+    /** Append the next page. No-op when nothing further is known to exist. */
+    suspend fun loadMore(client: CalibreClient): Boolean {
+        if (!_hasMore.value) return true
+        return fetchPage(client, replace = false)
+    }
+
+    private suspend fun fetchPage(client: CalibreClient, replace: Boolean): Boolean {
+        val ids = client.search(query = query, offset = loaded, limit = PAGE)
+            .getOrElse { error ->
                 _server.value = ServerState.Unreachable(error.describe())
-                false
-            },
-        )
+                return false
+            }
+
+        val page = client.books(ids).getOrElse { error ->
+            _server.value = ServerState.Unreachable(error.describe())
+            return false
+        }
+
+        _books.value = if (replace) page else _books.value + page
+        loaded += ids.size
+        // A short page means the server has nothing further; asking again would
+        // return empty and spin.
+        _hasMore.value = ids.size == PAGE
+        _server.value = ServerState.Reachable
+
+        // Only the unfiltered first page is cached -- that is what a cold,
+        // offline start shows. Caching search results would make the offline
+        // library depend on whatever happened to be typed last.
+        if (replace && query == null) {
+            storage.writeText(CATALOGUE_FILE, json.encodeToString(_books.value))
+        }
+        return true
     }
 
     // ------------------------------------------------------------- downloads
@@ -92,15 +146,87 @@ class Library(
         if (!storage.exists(path)) return false
         // A partial file from an interrupted transfer is not a downloaded book.
         // Size is the only check available without opening the archive, and it
-        // is enough: calibre tells us the expected size in format_metadata.
+        // is enough: calibre reports the expected size in format_metadata.
         return book.sizeBytes <= 0 || storage.sizeOf(path) >= book.sizeBytes
     }
 
+    // One worker, so several taps queue rather than competing for bandwidth.
+    // Unbounded: a personal library is small, and silently dropping a request
+    // the user explicitly made would be worse than a long queue.
+    private val queue =
+        Channel<Triple<CalibreClient, CalibreServer, CalibreBook>>(Channel.UNLIMITED)
+    private var worker: Job? = null
+
     /**
-     * Download [book] if it is not already complete, resuming a partial file.
+     * Add [book] to the download queue.
      *
-     * Returns the local path on success.
+     * Idempotent: already-downloaded, queued or running books are ignored, so
+     * tapping twice does not download twice. Re-enqueuing a *failed* book is
+     * how a retry happens, and it resumes from the partial file.
      */
+    fun enqueue(client: CalibreClient, server: CalibreServer, book: CalibreBook) {
+        if (isDownloaded(server, book)) return
+        when (_downloads.value[book.id]) {
+            is Download.Queued, is Download.Running -> return
+            else -> Unit
+        }
+        _downloads.value = _downloads.value + (book.id to Download.Queued)
+        startWorker()
+        queue.trySend(Triple(client, server, book))
+    }
+
+    private fun startWorker() {
+        if (worker?.isActive == true) return
+        worker = scope.launch {
+            for ((client, server, book) in queue) {
+                download(client, server, book)
+            }
+        }
+    }
+
+    private suspend fun download(
+        client: CalibreClient,
+        server: CalibreServer,
+        book: CalibreBook,
+    ) {
+        val path = localPath(server, book)
+        val have = if (storage.exists(path)) storage.sizeOf(path) else 0L
+        // Guard against a stale partial larger than the book: appending to it
+        // would produce a corrupt archive.
+        val resumeFrom = if (book.sizeBytes in 1..<have) { storage.delete(path); 0L } else have
+
+        _downloads.value = _downloads.value + (book.id to Download.Running(0f))
+
+        val result = client.download(
+            book = book,
+            alreadyHave = resumeFrom,
+            onProgress = { received, total ->
+                if (total > 0) {
+                    _downloads.value = _downloads.value +
+                        (book.id to Download.Running(received.toFloat() / total))
+                }
+            },
+            write = { bytes -> storage.append(path, bytes) },
+        )
+
+        result.fold(
+            onSuccess = {
+                _downloads.value = _downloads.value - book.id
+                _server.value = ServerState.Reachable
+                refreshDiskUsage()
+            },
+            onFailure = { error ->
+                // The partial file is kept deliberately: that is what makes the
+                // next attempt a resume rather than a restart.
+                _downloads.value =
+                    _downloads.value + (book.id to Download.Failed(error.describe()))
+                _server.value = ServerState.Unreachable(error.describe())
+                refreshDiskUsage()
+            },
+        )
+    }
+
+    /** Download now and wait — the "open this book" path. */
     suspend fun ensureDownloaded(
         client: CalibreClient,
         server: CalibreServer,
@@ -108,45 +234,42 @@ class Library(
     ): Result<String> {
         val path = localPath(server, book)
         if (isDownloaded(server, book)) return Result.success(path)
+        download(client, server, book)
+        return if (isDownloaded(server, book)) {
+            Result.success(path)
+        } else {
+            val reason = (_downloads.value[book.id] as? Download.Failed)?.reason
+                ?: "download did not complete"
+            Result.failure(IllegalStateException(reason))
+        }
+    }
 
-        val have = if (storage.exists(path)) storage.sizeOf(path) else 0L
-        // Guard against a stale partial that is somehow larger than the book:
-        // appending to it would produce a corrupt archive.
-        val resumeFrom = if (book.sizeBytes in 1..<have) { storage.delete(path); 0L } else have
+    // --------------------------------------------------------------- storage
 
-        _downloading.value = _downloading.value + (book.id to 0f)
+    fun refreshDiskUsage() {
+        _bytesOnDisk.value = storage.bookFiles().sumOf { storage.sizeOf(it) }
+    }
 
-        val result = client.download(
-            book = book,
-            alreadyHave = resumeFrom,
-            onProgress = { received, total ->
-                if (total > 0) {
-                    _downloading.value =
-                        _downloading.value + (book.id to (received.toFloat() / total))
-                }
-            },
-            write = { bytes -> storage.append(path, bytes) },
-        )
+    /**
+     * Delete a downloaded file. **The reading position is deliberately kept** —
+     * reclaiming space should not cost your place in the book (#15).
+     */
+    fun removeDownload(server: CalibreServer, book: CalibreBook) {
+        storage.delete(localPath(server, book))
+        _downloads.value = _downloads.value - book.id
+        refreshDiskUsage()
+    }
 
-        _downloading.value = _downloading.value - book.id
-
-        return result.fold(
-            onSuccess = {
-                _server.value = ServerState.Reachable
-                Result.success(path)
-            },
-            onFailure = { error ->
-                _server.value = ServerState.Unreachable(error.describe())
-                // The partial file is kept deliberately -- that is what makes
-                // the next attempt a resume rather than a restart.
-                Result.failure(error)
-            },
-        )
+    fun removeAllDownloads() {
+        storage.bookFiles().forEach { storage.delete(it) }
+        _downloads.value = emptyMap()
+        refreshDiskUsage()
     }
 
     private companion object {
         const val SERVER_FILE = "calibre-server.json"
         const val CATALOGUE_FILE = "calibre-catalogue.json"
+        const val PAGE = 50
     }
 }
 
@@ -162,8 +285,8 @@ class Library(
  * iOS 26, with the server reachable from Safari on the same device.
  *
  * So the two cases get two different messages: one is fixed in Settings, the
- * other by waking the Mac, and telling a user to check the wrong one wastes
- * their time.
+ * other by waking the Mac, and sending someone to the wrong one wastes their
+ * time.
  */
 internal fun Throwable.describe(): String {
     val raw = buildString {
@@ -177,14 +300,12 @@ internal fun Throwable.describe(): String {
     println("[calibre] request failed: $raw")
 
     // Checked first: it also matches the "offline" patterns below, and the
-    // specific diagnosis must win over the generic one.
-    val localNetworkBlocked = raw.contains("Local network prohibited", ignoreCase = true)
-    if (localNetworkBlocked) {
+    // specific diagnosis must beat the generic one.
+    if (raw.contains("Local network prohibited", ignoreCase = true)) {
         return "iOS is blocking this app from reaching your local network.\n\n" +
             "Settings › Privacy & Security › Local Network, and turn on " +
-            "\"calibre-ios\". If it isn't listed, delete the app and reinstall " +
-            "it — the permission prompt only appears once per install, and a " +
-            "missed prompt cannot be re-triggered."
+            "\"calibre-ios\". If it is already on, switch it off and on again — " +
+            "the grant does not always take effect until you do."
     }
 
     val looksUnreachable = listOf(
@@ -192,9 +313,11 @@ internal fun Throwable.describe(): String {
         "Could not connect", "-1009", "-1004",
     ).any { raw.contains(it, ignoreCase = true) }
 
+    // The raw text goes to the console, not the screen. A sleeping Mac is the
+    // normal case (#8), and pasting a Darwin exception under a plain-English
+    // sentence makes an expected state look like a crash.
     return if (looksUnreachable) {
-        "Can't reach the server — the Mac may be asleep, or on a different " +
-            "network.\n\n$raw"
+        "Can't reach the server — the Mac may be asleep, or on a different network."
     } else {
         raw
     }
