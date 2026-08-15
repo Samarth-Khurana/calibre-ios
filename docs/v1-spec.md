@@ -2,6 +2,12 @@
 
 Resolves [#11](https://github.com/Samarth-Khurana/calibre-ios/issues/11), the destination of the wayfinder map ([#1](https://github.com/Samarth-Khurana/calibre-ios/issues/1)). Every claim here traces to a closed ticket; the ticket number is the citation.
 
+Four research documents in [`docs/research/`](.) hold the source-derived workings behind conclusions this spec only states — read them when you need the *why* rather than the decision:
+[EPUB rendering in KMP on iOS](research/kmp-epub-rendering-ios.md) (#2) ·
+[iOS TTS capabilities](research/ios-tts-capabilities.md) (#3) ·
+[Calibre progress model and sync surfaces](research/calibre-progress-model.md) (#4) ·
+[Fetching books from Calibre](research/calibre-book-fetching.md) (#5)
+
 ---
 
 ## 1. Verdict
@@ -16,11 +22,11 @@ The central question was whether KMP could do this without falling back to Swift
 | Persistent theme / typography | **Yes, fully** | #10, #12 — every control applies live |
 | Position continuity with the Mac | **Yes, one direction** | #4, #6, #8 — Mac → iPhone only |
 
-**Zero Swift in V1.** Kotlin/Native reaches everything needed: `WKWebView` and its scheme and message handlers (#12), `AVSpeechSynthesizer` and its delegate (#9), `AVAudioSession` (#9). The reader viewport is a web view running foliate-js, driven from Kotlin — which is not a concession but the normal answer, since Readium injects JS into a web view on *both* platforms (#2, #7).
+**Zero Swift in V1.** Kotlin/Native reaches everything needed: `WKWebView` and its scheme and message handlers (#12), `AVSpeechSynthesizer` and its delegate (#9), `AVAudioSession` (#9). The reader viewport is a web view running foliate-js, driven from Kotlin — which is not a concession but the normal answer, since Readium injects JS into a web view on *both* platforms ([#2](research/kmp-epub-rendering-ios.md), #7).
 
 ### The one feature that is degraded, not delivered
 
-**Position sync is one-way.** iPhone → calibre *desktop viewer* is impossible over HTTP: the viewer never reads `last_read_positions` when opening a book, and `/book-update-annotations` silently discards `last-read` entries (#4). Reaching it needs a Mac-side plugin or filesystem agent — a second codebase. V1 therefore reads the Mac's position and never writes back (#8).
+**Position sync is one-way.** iPhone → calibre *desktop viewer* is impossible over HTTP: the viewer never reads `last_read_positions` when opening a book, and `/book-update-annotations` silently discards `last-read` entries ([#4](research/calibre-progress-model.md) — that document traces where the viewer's resume position actually comes from, which is why no HTTP route reaches it). Reaching it needs a Mac-side plugin or filesystem agent — a second codebase. V1 therefore reads the Mac's position and never writes back (#8).
 
 This is a real reduction against the original ask ("sync … in the iOS as well as Mac book"). It is not a technical unknown; it is a closed door, and the map records it as out of scope rather than pending.
 
@@ -113,7 +119,7 @@ Per chunk, `TtsSession` (`commonMain`):
 3. **Speak exactly one utterance** and await its completion.
 4. Advance.
 
-**Do not use `preUtteranceDelay`.** #3 left open whether `didStart` fires before or after it; this design *removes the dependency* rather than resolving it. If `didStart` fired after the delay, a queued design could not paint the highlight before the pause — which is the entire feature. Measured holds: **402–418 ms against a 400 ms setting**, so the round-trip cost is 2–18 ms and imperceptible.
+**Do not use `preUtteranceDelay`.** [#3](research/ios-tts-capabilities.md) left open whether `didStart` fires before or after it; this design *removes the dependency* rather than resolving it. If `didStart` fired after the delay, a queued design could not paint the highlight before the pause — which is the entire feature. Measured holds: **402–418 ms against a 400 ms setting**, so the round-trip cost is 2–18 ms and imperceptible.
 
 ### 4.2 Settings
 
@@ -198,7 +204,7 @@ Decided in #8, grounded in a live probe of the user's own library (#6).
 | Auth | Basic; required (position endpoints 404 without it) |
 | Identity | calibre `book_id` + format, scoped by `library_id` |
 
-`/ajax/*` is undocumented and unpromised, chosen over OPDS for richer metadata and custom columns. **Two route traps found the hard way (#6):**
+`/ajax/*` is undocumented and unpromised, chosen over OPDS for richer metadata and custom columns — [#5](research/calibre-book-fetching.md) documents all five options considered and why the others fail offline-first. **Two route traps found the hard way (#6):**
 - GET uses `{book}-{FMT}` with a **hyphen**. The colon form returns `{}` with HTTP **200** — a silent wrong answer.
 - POST requires a `device` field or returns `404 Invalid data`.
 
