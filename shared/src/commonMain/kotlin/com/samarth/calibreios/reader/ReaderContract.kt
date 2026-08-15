@@ -127,8 +127,37 @@ sealed interface ReaderCommand {
         override fun toJs() = "window.__reader.ttsHighlight(${mark.jsString()})"
     }
 
+    /**
+     * Begin TTS where the reader is looking: the selection if there is one,
+     * otherwise the first chunk of the visible page (#13).
+     *
+     * Explicitly *not* the top of the section — that was the reported bug.
+     */
     data object TtsFromCurrent : ReaderCommand {
         override fun toJs() = "window.__reader.ttsFromCurrent()"
+    }
+
+    data object ClearSelection : ReaderCommand {
+        override fun toJs() = "window.__reader.clearSelection()"
+    }
+
+    /** Ask for the table of contents; replies with [ReaderEvent.Toc]. */
+    data object RequestToc : ReaderCommand {
+        override fun toJs() = "window.__reader.toc()"
+    }
+
+    /** Search the whole book; replies with [ReaderEvent.SearchResults]. */
+    data class Search(val query: String) : ReaderCommand {
+        override fun toJs() = "window.__reader.search(${query.jsString()})"
+    }
+
+    data object ClearSearch : ReaderCommand {
+        override fun toJs() = "window.__reader.clearSearch()"
+    }
+
+    /** Navigate to a TOC entry's href. */
+    data class GoToHref(val href: String) : ReaderCommand {
+        override fun toJs() = "window.__reader.goToHref(${href.jsString()})"
     }
 
     /** Remove the read-aloud highlight, so a stopped chunk does not stay lit. */
@@ -155,6 +184,18 @@ sealed interface ReaderEvent {
         val sectionCount: Int = 0,
         /** The raw calibre position found in the EPUB, if any. */
         val calibrePos: String? = null,
+        /** The Mac's position converted to a CFI this engine can navigate to. */
+        val calibreCfi: String? = null,
+        /**
+         * Where the Mac's position sits relative to where the book actually
+         * opened: `1` ahead, `0` the same, `-1` behind, null if not comparable.
+         *
+         * A comparison rather than a percentage, because calibre's embedded
+         * bookmark carries **no `pos_frac`** — that lives only in `metadata.db`,
+         * which #6 proved is unreachable per-user over HTTP. `CFI.compare` is
+         * also exact, where a cross-renderer fraction is approximate (#12).
+         */
+        val calibreRelative: Int? = null,
         /** What the engine actually resumed at, after conversion. */
         val resolvedCfi: String? = null,
         val diag: String? = null,
@@ -191,6 +232,32 @@ sealed interface ReaderEvent {
         val done: Boolean = false,
     ) : ReaderEvent
 
+    /**
+     * The reader's text selection changed.
+     *
+     * Drives the in-app "Read from here" bar (#13). [text] is truncated —
+     * it is a label, not content.
+     */
+    @Serializable
+    @SerialName("selection")
+    data class Selection(
+        val text: String = "",
+        val active: Boolean = false,
+    ) : ReaderEvent
+
+    @Serializable
+    @SerialName("toc")
+    data class Toc(val entries: List<TocEntry> = emptyList()) : ReaderEvent
+
+    @Serializable
+    @SerialName("searchResults")
+    data class SearchResults(
+        val query: String = "",
+        val results: List<SearchHit> = emptyList(),
+        /** True when the cap was hit — say so rather than imply completeness. */
+        val truncated: Boolean = false,
+    ) : ReaderEvent
+
     @Serializable
     @SerialName("themeApplied")
     data object ThemeApplied : ReaderEvent
@@ -199,6 +266,22 @@ sealed interface ReaderEvent {
     @SerialName("error")
     data class Error(val where: String = "", val message: String = "") : ReaderEvent
 }
+
+@Serializable
+data class SearchHit(
+    val cfi: String = "",
+    /** Chapter this hit is in, when the engine knows it. */
+    val label: String = "",
+    val excerpt: String = "",
+)
+
+/** One table-of-contents entry, flattened; [depth] is for indentation. */
+@Serializable
+data class TocEntry(
+    val label: String = "",
+    val href: String? = null,
+    val depth: Int = 0,
+)
 
 @Serializable
 data class TtsChunk(

@@ -110,15 +110,46 @@ class TtsSession(
         if (resegment && _state.value != State.Idle) {
             scope.launch {
                 stop()
-                start(fromStart = false)
+                start(fromVisible = true)
             }
         }
     }
 
-    fun start(fromStart: Boolean = false) {
+    /**
+     * Begin reading.
+     *
+     * [fromVisible] is the normal case and what #13 decided: start at the
+     * reader's selection if there is one, otherwise the first chunk on the
+     * visible page. Passing false starts at the top of the section, which is
+     * only right when moving into a *new* section.
+     */
+    fun start(fromVisible: Boolean = true) {
         job?.cancel()
         _state.value = State.Speaking
-        job = scope.launch { runLoop(fromStart) }
+        job = scope.launch { runLoop(fromVisible) }
+    }
+
+    /**
+     * Step back one chunk and re-read it.
+     *
+     * "I missed that, say it again" is the most-wanted control in a read-aloud
+     * app (#13), and stepping back is the only way to get it. Within the loaded
+     * block this is just an index; crossing a block boundary needs the engine,
+     * which is what `TtsPrev` is for.
+     */
+    fun previous() {
+        val job = job
+        if (job == null || !job.isActive) return
+        if (index > 0) {
+            // -2 because the loop increments past the chunk it just finished;
+            // cancelling the utterance lands us on the *previous* one.
+            index = (index - 2).coerceAtLeast(-1)
+            speaker.stop()
+            _trace.tryEmit("back one")
+        } else {
+            reader.send(ReaderCommand.TtsPrev)
+            _trace.tryEmit("back a block")
+        }
     }
 
     fun pause() {
@@ -152,12 +183,15 @@ class TtsSession(
 
     // ------------------------------------------------------------------ loop
 
-    private suspend fun runLoop(fromStart: Boolean) {
+    private suspend fun runLoop(fromVisible: Boolean) {
         ensureSegmented()
         pending = emptyList()
         index = 0
 
-        var first = fromStart
+        // The first fetch honours where the reader is; every fetch after it is
+        // simply "the next block".
+        var startHere = fromVisible
+        var first = !fromVisible
         // A book opens on its cover or title page, which has no speakable
         // blocks at all. Running dry is therefore the *normal* first outcome,
         // not the end -- so exhausting a section always tries the next one, and
@@ -166,7 +200,12 @@ class TtsSession(
 
         while (true) {
             if (index >= pending.size) {
-                val got = requestChunks(first)
+                val got = if (startHere) {
+                    startHere = false
+                    requestFromCurrent()
+                } else {
+                    requestChunks(first)
+                }
                 first = false
                 if (got) {
                     emptySections = 0
@@ -182,6 +221,7 @@ class TtsSession(
                 }
             }
 
+            if (index < 0) index = 0
             val chunk = pending[index]
             _current.value = chunk
 
@@ -243,6 +283,26 @@ class TtsSession(
         withTimeoutOrNull(TTS_READY_TIMEOUT_MS) {
             while (!segmented) delay(20)
         }
+    }
+
+    /**
+     * Pulls the block containing the reader's selection, or the visible page.
+     *
+     * Falls back to the ordinary "next block" path if the engine returns
+     * nothing — a section with no resolvable position is better read from its
+     * start than not at all.
+     */
+    private suspend fun requestFromCurrent(): Boolean {
+        reader.send(ReaderCommand.TtsFromCurrent)
+        val delivery = withTimeoutOrNull(CHUNKS_TIMEOUT_MS) { chunkDeliveries.receive() }
+        if (delivery == null || delivery.done) return requestChunks(fromStart = true)
+        if (delivery.chunks.isEmpty()) return requestChunks(fromStart = false)
+        pending = delivery.chunks
+        index = 0
+        // The selection has been consumed; leaving it highlighted would compete
+        // with the read-aloud highlight for attention.
+        reader.send(ReaderCommand.ClearSelection)
+        return true
     }
 
     /** Pulls the next block. Returns false when the section is exhausted. */

@@ -43,6 +43,14 @@ view.addEventListener('relocate', ({ detail }) => {
     })
 })
 
+const currentSelectionRange = () => {
+    for (const c of view.renderer?.getContents?.() ?? []) {
+        const sel = c.doc?.defaultView?.getSelection?.()
+        if (sel && sel.rangeCount && !sel.isCollapsed) return sel.getRangeAt(0)
+    }
+    return null
+}
+
 view.addEventListener('load', ({ detail }) => {
     // Suppress in-book link navigation; the shell owns navigation.
     const doc = detail.doc
@@ -51,6 +59,15 @@ view.addEventListener('load', ({ detail }) => {
         const a = e.target.closest?.('a[href]')
         if (a) e.preventDefault()
     }, true)
+
+    // Report selection so the shell can offer "Read from here" (#13). The bar
+    // is ours rather than an item in the iOS callout: that would need UIMenu
+    // interop with no clean Kotlin/Native binding, and no Android equivalent.
+    doc.addEventListener('selectionchange', () => {
+        const sel = doc.defaultView?.getSelection?.()
+        const text = sel && !sel.isCollapsed ? sel.toString().trim() : ''
+        post({ type: 'selection', text: text.slice(0, 120), active: text.length > 0 })
+    })
 })
 
 // ---------------------------------------------------------------- TTS
@@ -82,8 +99,13 @@ const paintHighlight = range => {
         if (target) {
             target.overlayer.add(TTS_MARK, range, Overlayer.highlight, { color: highlightColor })
         }
-        // Still scroll, so a chunk below the fold pages into view.
-        view.renderer.scrollToAnchor(range, true)
+        // `false`, not `true`. The flag means "reason: selection", and foliate's
+        // paginator responds by actually SELECTING the range -- which is how
+        // upstream's TTS highlight worked at all, since it had nothing else.
+        // We paint our own overlay, so that selection is pure interference: it
+        // fires selectionchange on every chunk and pops the "Read from here"
+        // bar over the sentence currently being read.
+        view.renderer.scrollToAnchor(range, false)
     } catch (e) { fail('highlight', e) }
 }
 
@@ -141,7 +163,10 @@ window.__reader = {
             const book = view.book
 
             let calibrePos = null
-            if (!initialLocation && useCalibreBookmark) {
+            let calibreCfi = null
+            // -1 behind, 0 same, 1 ahead of where we actually opened.
+            let calibreRelative = null
+            if (useCalibreBookmark) {
                 try {
                     const marks = await book?.getCalibreBookmarks?.()
                     const lastRead = marks?.find?.(m => m.type === 'last-read')
@@ -154,11 +179,28 @@ window.__reader = {
                 }
             }
 
+            if (calibrePos) {
+                try { calibreCfi = CFI.fromCalibrePos(calibrePos) } catch (e) { calibreCfi = null }
+            }
+
             const source = initialLocation ?? calibrePos
             const fromCalibre = initialLocation ? isCalibre : calibrePos != null
             const last = source
                 ? (fromCalibre ? CFI.fromCalibrePos(source) : source)
                 : null
+
+            // NOTE: calibre's bookmark carries no pos_frac -- that lives only in
+            // metadata.db, which #6 proved is unreachable per-user over HTTP. So
+            // "Mac was at 60%" cannot be computed from what we have. Comparing
+            // the two CFIs answers the question that actually matters -- is the
+            // Mac further on than the phone -- and CFI.compare is exact where a
+            // cross-renderer fraction would only ever be approximate.
+            if (calibreCfi && initialLocation) {
+                try {
+                    const rel = CFI.compare(calibreCfi, initialLocation)
+                    calibreRelative = rel > 0 ? 1 : rel < 0 ? -1 : 0
+                } catch (e) { calibreRelative = null }
+            }
 
             await view.init(last ? { lastLocation: last } : { showTextStart: true })
             post({
@@ -170,6 +212,8 @@ window.__reader = {
                 })(),
                 sectionCount: book?.sections?.length ?? 0,
                 calibrePos,
+                calibreCfi,
+                calibreRelative,
                 resolvedCfi: last,
                 diag: `vw=${window.innerWidth}x${window.innerHeight} ` +
                       `renderer=${!!view.renderer} ` +
@@ -307,13 +351,88 @@ window.__reader = {
     ttsClearHighlight() { clearHighlight() },
 
     // Starts TTS from the currently visible position rather than block 0.
+    // Start where the reader is looking (#13), not at the top of the section.
+    //
+    // The no-selection fallback is `view.lastLocation.range` -- the visible
+    // range -- NOT `tts.start()`. That was the originally reported bug: reading
+    // always restarted from the beginning of the section however far in you
+    // were. A selection, when present, wins: that is "Read from here".
     ttsFromCurrent() {
         try {
-            const sel = view.renderer?.getContents?.()?.[0]?.doc?.getSelection?.()
-            const range = sel && sel.rangeCount ? sel.getRangeAt(0) : null
+            const range = currentSelectionRange() ?? view.lastLocation?.range ?? null
             const ssml = range ? view.tts.from(range) : view.tts.start()
             post({ type: 'ttsChunks', chunks: ssmlToChunks(ssml), done: !ssml })
         } catch (e) { fail('ttsFromCurrent', e) }
+    },
+
+    clearSelection() {
+        try {
+            for (const c of view.renderer?.getContents?.() ?? []) {
+                c.doc?.defaultView?.getSelection?.()?.removeAllRanges?.()
+            }
+            post({ type: 'selection', text: '', active: false })
+        } catch (e) { /* nothing selected */ }
+    },
+
+    // The table of contents, flattened with a depth so the shell can indent it
+    // without modelling a tree.
+    toc() {
+        try {
+            const flat = []
+            const walk = (items, depth) => {
+                for (const item of items ?? []) {
+                    if (item?.label) {
+                        flat.push({
+                            label: String(item.label).trim(),
+                            href: item.href ?? null,
+                            depth,
+                        })
+                    }
+                    if (item?.subitems) walk(item.subitems, depth + 1)
+                }
+            }
+            walk(view.book?.toc, 0)
+            post({ type: 'toc', entries: flat })
+        } catch (e) { fail('toc', e) }
+    },
+
+    // Full-book search. Results stream in from an async generator, so they are
+    // collected and posted once rather than dribbled across the bridge --
+    // capped, because a common word in a 7 MB book yields thousands and the
+    // shell only ever shows a list.
+    async search(query) {
+        try {
+            if (!query || !query.trim()) {
+                view.clearSearch()
+                post({ type: 'searchResults', query: '', results: [], truncated: false })
+                return
+            }
+            const results = []
+            let truncated = false
+            for await (const result of view.search({ query: query.trim() })) {
+                if (result === 'done') break
+                const items = result.subitems ?? (result.cfi ? [result] : [])
+                for (const item of items) {
+                    if (results.length >= 60) { truncated = true; break }
+                    const ex = item.excerpt ?? {}
+                    results.push({
+                        cfi: item.cfi,
+                        label: result.label ?? '',
+                        excerpt: `${ex.pre ?? ''}${ex.match ?? ''}${ex.post ?? ''}`.trim(),
+                    })
+                }
+                if (truncated) break
+            }
+            post({ type: 'searchResults', query, results, truncated })
+        } catch (e) { fail('search', e) }
+    },
+
+    clearSearch() {
+        try { view.clearSearch() } catch (e) { /* nothing to clear */ }
+    },
+
+    async goToHref(href) {
+        try { await view.goTo(href) } catch (e) { fail('goToHref', e) }
     },
 
     currentCFI() { return lastCFI },

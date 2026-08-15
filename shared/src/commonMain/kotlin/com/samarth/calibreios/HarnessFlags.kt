@@ -37,3 +37,6 @@ internal expect fun autoOpenBookId(): Int?
  * screens can be inspected without taps. `SIMCTL_CHILD_CALIBRE_SCREEN=settings`.
  */
 internal expect fun harnessScreen(): String?
+
+/** Harness-only: run this search once the book opens, and log the result. */
+internal expect fun harnessSearch(): String?
